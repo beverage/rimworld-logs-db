@@ -119,3 +119,5 @@ Players uploaded these logs to get help with a problem. HugsLib tells them the l
 ## Where the data comes from
 
 A script lists the gists through GitHub's API, downloads each log once, and packs a week at a time into Parquet. It records a SHA-256 of every log as downloaded, in the `sha256` column, so two uploads of the same log can be recognised. Nothing in a log is edited.
+
+The script, its tests and its checks are in [puller/](puller/README.md).

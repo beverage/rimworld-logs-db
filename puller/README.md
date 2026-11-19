@@ -1,0 +1,79 @@
+# The puller
+
+`corpus.py` builds the archive. It lists the public gists under `HugsLibRecordKeeper`, downloads each log once, packs a week of logs into Parquet, uploads the files to an R2 bucket, and records one row per log in a Supabase table.
+
+You only need this folder to maintain the archive. To query it, the [main README](../README.md) is enough.
+
+## What it needs
+
+- Python 3.11 or newer, and [uv](https://docs.astral.sh/uv/). The packing and upload steps use `pyarrow` and `boto3`, which `uv run` installs from the header of `corpus.py`.
+- A GitHub token for listing gists. It is read from `GITHUB_TOKEN` or `GH_TOKEN`, or from the `gh` CLI if you are signed in.
+- An R2 bucket and an API token with "Object Read & Write" on it.
+- A Supabase project with [schema.sql](schema.sql) applied, and its secret key.
+
+## The env file
+
+Keys are read from `~/.config/hugslib-corpus/env`, or from the path in `HUGSLIB_CORPUS_ENV`. One `KEY=value` per line, no quotes:
+
+```
+R2_ENDPOINT=https://<account id>.eu.r2.cloudflarestorage.com
+R2_BUCKET=hugslib-logs
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
+SUPABASE_URL=https://<project ref>.supabase.co
+SUPABASE_SECRET_KEY=
+```
+
+A bucket created in R2's EU jurisdiction is served only from the `.eu.` host. Through the default host, `https://<account id>.r2.cloudflarestorage.com`, every call to it returns "access denied".
+
+`uv run puller/checks/credentials.py` confirms the keys work without printing them.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `corpus.py index --since 2024-11-18` | Lists uploads back to a date into the local index. |
+| `corpus.py index --new` | Lists only uploads newer than the index already holds. |
+| `uv run corpus.py run` | For each week, newest first: download, pack, upload, sync. |
+| `uv run corpus.py run --weeks 4` | The same, stopping after four weeks. |
+| `corpus.py status` | Counts by state, and what is waiting to upload or sync. |
+
+`run` chains four steps that also exist as commands of their own, for redoing one by hand: `fetch`, `pack`, `push` and `sync`. Every command resumes where an earlier one stopped. The week still in progress is skipped, because uploads are still arriving for it.
+
+## Pace
+
+**Downloads** go to GitHub's raw file host without a token, at 6 requests a second by default (`--rps`). A 403 or 429 pauses every download for the time the response asks, and five refusals in a row end the run. One week of 2,123 logs took 7 minutes from download to upload.
+
+**Listing** is slower than it looks. A list request for this account takes about 10 seconds, and GitHub's secondary rate limit allows about 90 seconds of request time a minute, so pages are read one at a time. Two years is about 2,450 pages. The listing and a `run` can work at the same time: both go newest first, and the listing stays ahead.
+
+## What stays on disk
+
+Everything local lives in one data folder, `~/Code/Apps/rimworld-log-corpus` unless `--data` or `HUGSLIB_CORPUS_DIR` says otherwise.
+
+- `index.sqlite` is the working state: every gist, how far it has got, and the dictionary that gives each Harmony patch its number. `run` copies it to `state/index.sqlite` in the bucket every eight weeks and when it finishes.
+- `staging/`, `shards/` and `patches/` hold one week while it is being processed. After the upload is checked against the file sizes, they are deleted.
+
+A log is compressed as it arrives and is never written to disk as plain text.
+
+## What it writes to the bucket
+
+```
+logs/week=2026-W46/part-000.parquet
+patches/HugslibLogs/week=2026-W46/part-000.parquet
+patches/ActivePatches/week=2026-W46/part-000.parquet
+patches/HarmonyPatches/week=2026-W46/part-000.parquet
+patches/HarmonyPatchNamespaces/week=2026-W46/part-000.parquet
+state/index.sqlite
+```
+
+A week normally has one part. A second part appears when logs for that week are fetched later, for example after retrying failed downloads.
+
+## Tests and checks
+
+| Script | Needs | What it proves |
+|---|---|---|
+| `python3 puller/tests/offline.py` | nothing | The parsers, the refusal handling and the Supabase requests, against a local test server. |
+| `uv run puller/checks/credentials.py` | the env file | The R2 token can list, write, read and delete; the Supabase table answers. |
+| `uv run puller/checks/packed.py` | packed files on disk | Every log's patch set rebuilds exactly from the four patch tables. |
+| `uv run puller/checks/bucket.py` | the env file and the index | The bucket holds every uploaded part, and its row counts match the index. |
+| `uv run puller/checks/docs.py` | the env file | Every SQL block in the docs runs against the bucket, from a fresh setup. |
