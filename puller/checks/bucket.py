@@ -43,7 +43,11 @@ s3 = boto3.client(
     aws_access_key_id=env["R2_ACCESS_KEY_ID"],
     aws_secret_access_key=env["R2_SECRET_ACCESS_KEY"],
     region_name="auto",
-    config=Config(signature_version="s3v4", request_checksum_calculation="when_required", response_checksum_validation="when_required"),
+    config=Config(
+        signature_version="s3v4",
+        request_checksum_calculation="when_required",
+        response_checksum_validation="when_required",
+    ),
 )
 objects = {}
 for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket):
@@ -71,7 +75,11 @@ check("all five files of each uploaded part are in the bucket", not missing, f"{
 left = [p for folder in ("staging", "shards", "patches") for p in (data / folder).rglob("*") if p.is_file()]
 check("nothing is left on disk but the index", not left, f"{len(left)} files")
 packed = con.execute("SELECT COUNT(*) FROM gists WHERE state = 'packed'").fetchone()[0]
-states = dict(con.execute("SELECT state, COUNT(*) FROM gists WHERE week IN (SELECT DISTINCT week FROM gists WHERE state = 'packed') GROUP BY state"))
+states = dict(
+    con.execute(
+        "SELECT state, COUNT(*) FROM gists WHERE week IN (SELECT DISTINCT week FROM gists WHERE state = 'packed') GROUP BY state"
+    )
+)
 print("-- index, logs by state in the packed weeks:", states)
 
 db = duckdb.connect()
@@ -88,7 +96,10 @@ for table in tables:
 count, first, last = db.execute(f"select count(*), min(created_at), max(created_at) from {logs}").fetchone()
 check("logs in the bucket equal packed logs in the index", count == packed, f"{count} vs {packed}")
 print(f"-- logs span {first} to {last}")
-print("-- by game version (top 6):", db.execute(f"select game_version, count(*) from {logs} group by 1 order by 2 desc limit 6").fetchall())
+print(
+    "-- by game version (top 6):",
+    db.execute(f"select game_version, count(*) from {logs} group by 1 order by 2 desc limit 6").fetchall(),
+)
 rows, with_patches = db.execute("select count(*), count(distinct HugslibLogId) from ActivePatches").fetchone()
 patches = db.execute("select count(*) from HarmonyPatches").fetchone()[0]
 namespaces = db.execute("select count(*) from HarmonyPatchNamespaces").fetchone()[0]
@@ -101,7 +112,10 @@ joined = db.execute(
 check("every ActivePatches row joins through all four tables", joined == rows, f"{joined} of {rows}")
 check(
     "log ids agree between the log files and HugslibLogs",
-    db.execute(f"select count(*) from {logs} l join HugslibLogs h on h.HugslibLogId = l.hugslib_log_id and h.GUID = l.id").fetchone()[0] == count,
+    db.execute(
+        f"select count(*) from {logs} l join HugslibLogs h on h.HugslibLogId = l.hugslib_log_id and h.GUID = l.id"
+    ).fetchone()[0]
+    == count,
 )
 active_bytes = sum(size for key, size in objects.items() if key.startswith("patches/ActivePatches/"))
 print(f"-- ActivePatches {active_bytes / max(rows, 1):.2f} bytes a row in the bucket")

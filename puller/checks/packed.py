@@ -12,7 +12,6 @@ Run:  uv run puller/checks/packed.py [data folder]
 """
 
 import glob
-import importlib.util
 import os
 import sys
 from pathlib import Path
@@ -20,10 +19,10 @@ from pathlib import Path
 import duckdb
 import pyarrow.parquet as pq
 
-spec = importlib.util.spec_from_file_location("corpus", Path(__file__).resolve().parents[1] / "corpus.py")
-corpus = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(corpus)
-root = str(Path(sys.argv[1]).expanduser() if len(sys.argv) > 1 else corpus.DEFAULT_DATA).rstrip("/")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from logsdb import parsing, settings  # noqa: E402
+
+root = str(Path(sys.argv[1]).expanduser() if len(sys.argv) > 1 else settings.DEFAULT_DATA).rstrip("/")
 
 failed = []
 
@@ -61,7 +60,7 @@ check("each distinct patch is listed once", len(set(patches.values())) == len(pa
 check("namespace ids are unique across parts", namespace_rows == len(namespaces), f"{namespace_rows} rows")
 check(
     "every patch's namespace matches its method",
-    all(namespaces.get(patch_namespace[i]) == corpus.namespace_of(patches[i][3]) for i in patches),
+    all(namespaces.get(patch_namespace[i]) == parsing.namespace_of(patches[i][3]) for i in patches),
 )
 
 # the join table
@@ -84,9 +83,11 @@ for path in parts("HugslibLogs"):
 logs = mismatched = wrong_guid = expected_rows = 0
 for path in sorted(glob.glob(f"{root}/shards/*/*.parquet")):
     table = pq.read_table(path, columns=["hugslib_log_id", "id", "text"])
-    for log_no, gist_id, text in zip(table["hugslib_log_id"].to_pylist(), table["id"].to_pylist(), table["text"].to_pylist()):
+    for log_no, gist_id, text in zip(
+        table["hugslib_log_id"].to_pylist(), table["id"].to_pylist(), table["text"].to_pylist()
+    ):
         logs += 1
-        expect = set(corpus.parse_patches(text))
+        expect = set(parsing.parse_patches(text))
         expected_rows += len(expect)
         got = {patches[p] for p in active.get(log_no, ())}
         mismatched += expect != got
@@ -95,15 +96,28 @@ check("every log's patches rebuild exactly from the tables", mismatched == 0, f"
 check("HugslibLogs matches the log files", wrong_guid == 0 and len(log_guid) == logs, f"{len(log_guid)} rows")
 check("row count equals the parser's count", active_rows == expected_rows, f"{expected_rows}")
 
-print(f"-- files: ActivePatches {len(parts('ActivePatches'))} parts, {size('ActivePatches')} bytes, {size('ActivePatches') / active_rows:.2f} bytes a row")
-print(f"-- files: HarmonyPatches {size('HarmonyPatches')} bytes for {len(patches)} patches, {size('HarmonyPatches') / len(patches):.1f} bytes each")
-print(f"-- files: HarmonyPatchNamespaces {size('HarmonyPatchNamespaces')} bytes for {len(namespaces)}; HugslibLogs {size('HugslibLogs')} bytes")
+print(
+    f"-- files: ActivePatches {len(parts('ActivePatches'))} parts, {size('ActivePatches')} bytes, {size('ActivePatches') / active_rows:.2f} bytes a row"
+)
+print(
+    f"-- files: HarmonyPatches {size('HarmonyPatches')} bytes for {len(patches)} patches, {size('HarmonyPatches') / len(patches):.1f} bytes each"
+)
+print(
+    f"-- files: HarmonyPatchNamespaces {size('HarmonyPatchNamespaces')} bytes for {len(namespaces)}; HugslibLogs {size('HugslibLogs')} bytes"
+)
 
 # the same data through SQL, under the table names in the design
 con = duckdb.connect()
 for table in ("HugslibLogs", "ActivePatches", "HarmonyPatches", "HarmonyPatchNamespaces"):
-    con.execute(f"create view {table} as select * exclude (week) from read_parquet('{root}/patches/{table}/*/*.parquet', hive_partitioning=true)")
-print("-- SQL: rows by kind", con.execute("select Kind, count(*) from ActivePatches join HarmonyPatches using (HarmonyPatchId) group by 1 order by 2 desc").fetchall())
+    con.execute(
+        f"create view {table} as select * exclude (week) from read_parquet('{root}/patches/{table}/*/*.parquet', hive_partitioning=true)"
+    )
+print(
+    "-- SQL: rows by kind",
+    con.execute(
+        "select Kind, count(*) from ActivePatches join HarmonyPatches using (HarmonyPatchId) group by 1 order by 2 desc"
+    ).fetchall(),
+)
 print(
     "-- SQL: patches by how many logs carry them (1 log, 2-9, 10+)",
     con.execute(

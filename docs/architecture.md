@@ -56,7 +56,7 @@ flowchart TB
 
 **GitHub** is the source. HugsLib and the standalone Log Publisher upload every shared log as a gist under one account, and the puller only ever reads from it.
 
-**The puller** is one Python script, [puller/corpus.py](../puller/corpus.py), run by the maintainer. It works a week at a time: download that week's logs, pack them into Parquet, upload, delete the local copy. Its working state is a single SQLite file.
+**The puller** is a small Python package, started through [puller/corpus.py](../puller/corpus.py) and run by the maintainer. It works a week at a time: download that week's logs, pack them into Parquet, upload, delete the local copy. Its working state is a single SQLite file. [puller/README.md](../puller/README.md) maps each step to its module.
 
 **The R2 bucket** holds the data: one log file and four patch-table files per upload week, plus a backup of the puller's SQLite file. It is private, and Cloudflare does not charge for reads.
 

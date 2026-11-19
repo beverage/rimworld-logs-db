@@ -1,4 +1,4 @@
-"""Offline checks for corpus.py. Nothing here touches GitHub, R2 or Supabase.
+"""Offline checks for the puller. Nothing here touches GitHub, R2 or Supabase.
 
 Covers the log and patch parsers, the download step's handling of refusals,
 errors and short bodies (against a local test server), the env file reader,
@@ -10,7 +10,6 @@ Run:  python3 puller/tests/offline.py
 import gzip
 import http.client
 import http.server
-import importlib.util
 import json
 import os
 import sys
@@ -19,10 +18,9 @@ import threading
 import time
 from pathlib import Path
 
-CORPUS = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parents[1] / "corpus.py"
-spec = importlib.util.spec_from_file_location("corpus", CORPUS)
-corpus = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(corpus)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from logsdb import download, index_db, layout, listing, parsing, settings, supabase  # noqa: E402
+from logsdb.common import ConfigError, UploadError, week_of  # noqa: E402
 
 failed = []
 
@@ -53,7 +51,7 @@ log = (
     "[00:00:01] RimWorld 1.7.5011 rev1082\r\n"
     "(log trimmed to 10,000 lines. Use publishing options to upload the full log)"
 )
-facts = corpus.parse_log(log)
+facts = parsing.parse_log(log)
 check(
     "mod package ids",
     facts["mods"],
@@ -69,15 +67,19 @@ check(
 check("dlcs", facts["dlcs"], ["Odyssey", "royalty"])
 check("game version", (facts["game_version"], facts["game_rev"]), ("1.7.5011", 1082))
 check("trimmed", facts["trimmed"], True)
-check("no header", corpus.parse_log("just text")["mod_count"], 0)
-check("week at ISO year edge", corpus.week_of("2025-12-29T00:00:00Z"), "2026-W01")
-check("week mid-year", corpus.week_of("2025-07-11T12:00:00Z"), "2025-W28")
-check("uploader standalone", corpus.uploader_of("Rimworld output log published using HugsLib Standalone Log Publisher"), "standalone")
-check("uploader hugslib", corpus.uploader_of("Rimworld output log published using HugsLib"), "hugslib")
-check("uploader other", corpus.uploader_of(None), "other")
+check("no header", parsing.parse_log("just text")["mod_count"], 0)
+check("week at ISO year edge", week_of("2025-12-29T00:00:00Z"), "2026-W01")
+check("week mid-year", week_of("2025-07-11T12:00:00Z"), "2025-W28")
+check(
+    "uploader standalone",
+    listing.uploader_of("Rimworld output log published using HugsLib Standalone Log Publisher"),
+    "standalone",
+)
+check("uploader hugslib", listing.uploader_of("Rimworld output log published using HugsLib"), "hugslib")
+check("uploader other", listing.uploader_of(None), "other")
 check(
     "log file pick",
-    corpus.log_file({"files": {"a.txt": {"size": 5}, "output_log.txt": {"size": 1}}})["size"],
+    listing.log_file({"files": {"a.txt": {"size": 5}, "output_log.txt": {"size": 1}}})["size"],
     1,
 )
 
@@ -98,7 +100,7 @@ patch_log = (
 )
 check(
     "patch entries",
-    set(corpus.parse_patches(patch_log)),
+    set(parsing.parse_patches(patch_log)),
     {
         ("Ability.PreActivate", "postfix", None, "A.B.Post"),
         ("Pawn.Tick", "prefix", 800, "X.Y.Pre"),
@@ -109,21 +111,25 @@ check(
         ("Low.Priority", "postfix", -5, "Neg.Class.Post"),
     },
 )
-check("no patch block", corpus.parse_patches("nothing here"), [])
+check("no patch block", parsing.parse_patches("nothing here"), [])
 check(
     "namespace of a nested class",
-    corpus.namespace_of("VFEEmpire.HarmonyPatches.Patch_Conceit+Work.Transpiler"),
+    parsing.namespace_of("VFEEmpire.HarmonyPatches.Patch_Conceit+Work.Transpiler"),
     "VFEEmpire.HarmonyPatches",
 )
-check("namespace of a bare class", corpus.namespace_of("Class.Method"), "")
-key = corpus.patch_key(("a", "prefix", None, "b"))
-check("patch key is stable and fits 64 signed bits", (key == corpus.patch_key(("a", "prefix", None, "b")), -(2**63) <= key < 2**63), (True, True))
-check("priority is part of the key", key != corpus.patch_key(("a", "prefix", 800, "b")), True)
+check("namespace of a bare class", parsing.namespace_of("Class.Method"), "")
+key = parsing.patch_key(("a", "prefix", None, "b"))
+check(
+    "patch key is stable and fits 64 signed bits",
+    (key == parsing.patch_key(("a", "prefix", None, "b")), -(2**63) <= key < 2**63),
+    (True, True),
+)
+check("priority is part of the key", key != parsing.patch_key(("a", "prefix", 800, "b")), True)
 
 # ---- refusal counting
 
 stop = threading.Event()
-throttle = corpus.Throttle(rps=1000)
+throttle = download.Throttle(rps=1000)
 check("first refusal counts", throttle.refused("1"), 1)
 check("refusal during the pause does not count", throttle.refused("1"), 1)
 time.sleep(2.1)
@@ -160,21 +166,21 @@ port = server.server_address[1]
 
 
 def local_connection():
-    conn = getattr(corpus._thread, "conn", None)
+    conn = getattr(download._thread, "conn", None)
     if conn is None:
-        conn = corpus._thread.conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        conn = download._thread.conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
     return conn
 
 
-corpus.raw_connection = local_connection
+download.raw_connection = local_connection
 staging = Path(tempfile.mkdtemp(prefix="corpus-offline-"))
 
 
 def run(path, expect=len(BODY), stop_event=None, throttle_obj=None):
-    return corpus.fetch_one(
+    return download.fetch_one(
         (path.strip("/"), f"http://x{path}", "2026-W47", expect),
         staging,
-        throttle_obj or corpus.Throttle(rps=1000),
+        throttle_obj or download.Throttle(rps=1000),
         stop_event or threading.Event(),
         64 << 20,
     )
@@ -182,33 +188,33 @@ def run(path, expect=len(BODY), stop_event=None, throttle_obj=None):
 
 script["/ok"] = [(200, {}, BODY)]
 result = run("/ok")
-check("200 is fetched", (result["state"], result["bytes"]), ("fetched", len(BODY)))
+check("200 is fetched", (result.state, result.bytes), ("fetched", len(BODY)))
 check("staged gzip holds the body", gzip.open(staging / "2026-W47" / "ok.txt.gz").read(), BODY)
 
 script["/gone"] = [(404, {}, b"")]
-check("404 is gone", run("/gone")["state"], "gone")
+check("404 is gone", run("/gone").state, "gone")
 
 script["/short"] = [(200, {}, BODY[:100])]
 result = run("/short")
-check("short body is an error", (result["state"], result["error"]), ("error", f"got 100 of {len(BODY)} bytes"))
+check("short body is an error", (result.state, result.error), ("error", f"got 100 of {len(BODY)} bytes"))
 check("short body leaves no file", list((staging / "2026-W47").glob("short*")), [])
 
-check("too large is skipped", run("/ok", expect=(64 << 20) + 1)["state"], "too_large")
+check("too large is skipped", run("/ok", expect=(64 << 20) + 1).state, "too_large")
 
 script["/twice"] = [(429, {"Retry-After": "1"}, b""), (429, {"Retry-After": "1"}, b""), (200, {}, BODY)]
-throttle = corpus.Throttle(rps=1000)
+throttle = download.Throttle(rps=1000)
 began = time.monotonic()
 result = run("/twice", throttle_obj=throttle)
 waited = time.monotonic() - began
-check("429 twice then 200 is fetched", result["state"], "fetched")
+check("429 twice then 200 is fetched", result.state, "fetched")
 check("each refusal was waited out", waited >= 4.0, True)
 check("refusal run reset by the success", throttle.refusals, 0)
 
 script["/always"] = [(429, {"Retry-After": "0"}, b"")]
 stop = threading.Event()
-throttle = corpus.Throttle(rps=1000)
+throttle = download.Throttle(rps=1000)
 result = run("/always", stop_event=stop, throttle_obj=throttle)
-check("five refusals in a row stop the run", (stop.is_set(), throttle.refusals, result["state"]), (True, 5, None))
+check("five refusals in a row stop the run", (stop.is_set(), throttle.refusals, result.state), (True, 5, None))
 
 script["/broken"] = [(500, {}, b"")]
 stop = threading.Event()
@@ -216,7 +222,7 @@ original_wait = stop.wait
 slept = []
 stop.wait = lambda seconds=None: slept.append(seconds) or False
 result = run("/broken", stop_event=stop)
-check("500 four times is an error", (result["state"], result["error"]), ("error", "HTTP 500"))
+check("500 four times is an error", (result.state, result.error), ("error", "HTTP 500"))
 check("backoff doubles", [s for s in slept if s >= 1], [2.0, 4.0, 8.0, 16.0])
 
 # ---- env file and bucket keys
@@ -225,23 +231,23 @@ env_dir = Path(tempfile.mkdtemp(prefix="corpus-env-"))
 env_file = env_dir / "env"
 env_file.write_text("# comment\n\nA=1\nB = two words \nC=has=equals==\nnot a pair\nEMPTY=\n")
 os.environ["HUGSLIB_CORPUS_ENV"] = str(env_file)
-check("env file parses", corpus.load_env(), {"A": "1", "B": "two words", "C": "has=equals==", "EMPTY": ""})
+check("env file parses", settings.load_env(), {"A": "1", "B": "two words", "C": "has=equals==", "EMPTY": ""})
 try:
-    corpus.require(corpus.load_env(), ("A", "EMPTY", "MISSING"))
+    settings.require(settings.load_env(), ("A", "EMPTY", "MISSING"))
     raised = None
-except corpus.ConfigError as exc:
+except ConfigError as exc:
     raised = str(exc)
 check("missing settings are named, not shown", raised, "not set in the env file: EMPTY, MISSING")
 os.environ["HUGSLIB_CORPUS_ENV"] = str(env_dir / "absent")
 try:
-    corpus.load_env()
+    settings.load_env()
     raised = False
-except corpus.ConfigError:
+except ConfigError:
     raised = True
 check("an unreadable env file is a config error", raised, True)
 check(
     "part files map to bucket keys",
-    sorted(corpus.part_files(Path("/d"), "week=2026-W46/part-000.parquet")),
+    sorted(layout.part_files(Path("/d"), "week=2026-W46/part-000.parquet")),
     [
         "logs/week=2026-W46/part-000.parquet",
         "patches/ActivePatches/week=2026-W46/part-000.parquet",
@@ -269,7 +275,7 @@ def do_POST(self):
 
 Handler.do_POST = do_POST
 sync_dir = Path(tempfile.mkdtemp(prefix="corpus-sync-"))
-con = corpus.open_db(sync_dir)
+con = index_db.open_db(sync_dir)
 for n in range(1, 503):
     con.execute(
         "INSERT INTO gists (id, created_at, week, size, raw_url, uploader, state, shard, sha256, log_no)"
@@ -277,10 +283,12 @@ for n in range(1, 503):
         " 'week=2026-W46/part-000.parquet', 'aa', ?)",
         (f"g{n:04d}", n),
     )
-    con.execute("INSERT INTO facts VALUES (?, '1.6.4871', 1, 5, ?, 0, 9, 1)", (f"g{n:04d}", "Royalty,Odyssey" if n == 1 else ""))
+    con.execute(
+        "INSERT INTO facts VALUES (?, '1.6.4871', 1, 5, ?, 0, 9, 1)", (f"g{n:04d}", "Royalty,Odyssey" if n == 1 else "")
+    )
 con.commit()
 fake = {"SUPABASE_URL": f"http://127.0.0.1:{port}", "SUPABASE_SECRET_KEY": "sb_secret_test"}
-check("sync upserts every packed log", corpus.sync_logs(con, fake), 502)
+check("sync upserts every packed log", supabase.sync_logs(con, fake), 502)
 check("sync sends two batches", [len(post[2]) for post in posts], [500, 2])
 path, headers, _ = posts[0]
 check(
@@ -308,17 +316,17 @@ check(
         "line_count": 9,
     },
 )
-check("a second sync has nothing to send", corpus.sync_logs(con, fake), 0)
+check("a second sync has nothing to send", supabase.sync_logs(con, fake), 0)
 con.execute("UPDATE gists SET synced = 0 WHERE id = 'g0002'")
 con.commit()
 for reply, want in (((404, b'{"code":"PGRST205","message":"no table"}'), "config"), ((500, b"boom"), "upload")):
     post_reply[0] = reply
     try:
-        corpus.sync_logs(con, fake)
+        supabase.sync_logs(con, fake)
         raised = None
-    except corpus.ConfigError:
+    except ConfigError:
         raised = "config"
-    except corpus.UploadError:
+    except UploadError:
         raised = "upload"
     check(f"HTTP {reply[0]} from Supabase is a {want} error", raised, want)
 check("a refused batch stays unsynced", con.execute("SELECT synced FROM gists WHERE id = 'g0002'").fetchone()[0], 0)

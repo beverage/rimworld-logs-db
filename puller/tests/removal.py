@@ -2,7 +2,7 @@
 # requires-python = ">=3.11"
 # dependencies = ["pyarrow>=17"]
 # ///
-"""Checks for `corpus.py remove`, on a small made-up archive. Nothing here touches R2 or Supabase.
+"""Checks for removing a log, on a small made-up archive. Nothing here touches R2 or Supabase.
 
 Packs six synthetic logs, then removes some of them three ways: a dry run, a
 removal while the part is still on disk, and a removal after upload, with a
@@ -11,11 +11,9 @@ folder standing in for the bucket and a local server standing in for Supabase.
 Run:  uv run puller/tests/removal.py
 """
 
-import argparse
 import gzip
 import hashlib
 import http.server
-import importlib.util
 import json
 import os
 import shutil
@@ -27,9 +25,8 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
-spec = importlib.util.spec_from_file_location("corpus", Path(__file__).resolve().parents[1] / "corpus.py")
-corpus = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(corpus)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from logsdb import bucket, download, index_db, layout, listing, packing, parsing, removal, settings, supabase  # noqa: E402
 
 failed = []
 
@@ -44,15 +41,15 @@ def check(name, got, want):
 # ---- links
 
 A, B, C, D, E, F = (letter * 32 for letter in "abcdef")
-check("id from a gist link", corpus.gist_id_of(f"https://gist.github.com/HugsLibRecordKeeper/{A}"), A)
-check("id from a link with no account", corpus.gist_id_of(f"https://gist.github.com/{A}#file-output_log-txt"), A)
+check("id from a gist link", removal.gist_id_of(f"https://gist.github.com/HugsLibRecordKeeper/{A}"), A)
+check("id from a link with no account", removal.gist_id_of(f"https://gist.github.com/{A}#file-output_log-txt"), A)
 check(
     "id from a raw log link",
-    corpus.gist_id_of(f"https://gist.githubusercontent.com/HugsLibRecordKeeper/{A}/raw/{'9' * 40}/output_log.txt"),
+    removal.gist_id_of(f"https://gist.githubusercontent.com/HugsLibRecordKeeper/{A}/raw/{'9' * 40}/output_log.txt"),
     A,
 )
-check("a bare id", corpus.gist_id_of(f"  {A}\n"), A)
-check("not a gist", corpus.gist_id_of("https://example.com/whatever"), None)
+check("a bare id", removal.gist_id_of(f"  {A}\n"), A)
+check("not a gist", removal.gist_id_of("https://example.com/whatever"), None)
 
 # ---- a small packed archive
 
@@ -71,7 +68,7 @@ def make_log(seed: int) -> bytes:
 
 data = Path(tempfile.mkdtemp(prefix="corpus-removal-"))
 week = "2026-W40"
-con = corpus.open_db(data)
+con = index_db.open_db(data)
 (data / "staging" / week).mkdir(parents=True)
 # B and C are the same log uploaded twice, and so are D and E.
 for number, (gist_id, seed) in enumerate(((A, 1), (B, 2), (C, 2), (D, 3), (E, 3), (F, 4))):
@@ -84,12 +81,10 @@ for number, (gist_id, seed) in enumerate(((A, 1), (B, 2), (C, 2), (D, 3), (E, 3)
         (gist_id, f"2026-09-29T10:00:0{number}Z", week, len(raw), hashlib.sha256(raw).hexdigest()),
     )
 con.commit()
-packed = corpus.cmd_pack(
-    argparse.Namespace(data=data, week=None, include_open=False, partial=False, keep_staging=False, level=3)
-)
+packed = packing.pack(data, level=3)
 check("the six logs pack", packed, 0)
 shard = f"week={week}/part-000.parquet"
-files = corpus.part_files(data, shard)
+files = layout.part_files(data, shard)
 
 
 def rows(path, column):
@@ -107,7 +102,7 @@ def state(gist_id):
 
 def remove(*gists, **options):
     settings = {"dry_run": False, "same_content": False, "no_supabase": False, "level": 3, **options}
-    return corpus.cmd_remove(argparse.Namespace(data=data, gists=list(gists), **settings))
+    return removal.remove(data, list(gists), **settings)
 
 
 # A local server stands in for Supabase, and a folder for the bucket.
@@ -171,8 +166,16 @@ check("A is gone from the log file", sorted(rows(files[f"logs/{shard}"], "id")),
 check("A is gone from HugslibLogs", a_no in rows(files[f"patches/HugslibLogs/{shard}"], "HugslibLogId"), False)
 active = rows(files[f"patches/ActivePatches/{shard}"], "HugslibLogId")
 check("A's patch rows are gone and the others are intact", (a_no in active, len(active)), (False, others_before))
-check("the patch dictionary is untouched", before[f"patches/HarmonyPatches/{shard}"], files[f"patches/HarmonyPatches/{shard}"].stat().st_size)
-check("the index marks A removed", (state(A), con.execute("SELECT COUNT(*) FROM removed WHERE id = ?", (A,)).fetchone()[0]), ("removed", 1))
+check(
+    "the patch dictionary is untouched",
+    before[f"patches/HarmonyPatches/{shard}"],
+    files[f"patches/HarmonyPatches/{shard}"].stat().st_size,
+)
+check(
+    "the index marks A removed",
+    (state(A), con.execute("SELECT COUNT(*) FROM removed WHERE id = ?", (A,)).fetchone()[0]),
+    ("removed", 1),
+)
 check("A's facts are deleted", con.execute("SELECT COUNT(*) FROM facts WHERE id = ?", (A,)).fetchone()[0], 0)
 check("the part's log count drops", con.execute("SELECT logs FROM parts WHERE shard = ?", (shard,)).fetchone()[0], 5)
 check("Supabase is asked to delete A's row", deletes, [(f"/rest/v1/logs?id=eq.{A}", "test-key")])
@@ -187,7 +190,7 @@ gist = {"id": A, "created_at": "2026-09-29T10:00:00Z", "description": "Rimworld 
 
 def index(gist_id):
     """What an index run does when it meets this gist, committed as the index commits."""
-    added = corpus.add_gist(con, {**gist, "id": gist_id}, {"size": 1, "raw_url": "u"})
+    added = listing.add_gist(con, {**gist, "id": gist_id}, {"size": 1, "raw_url": "u"})
     con.commit()
     return added
 
@@ -201,62 +204,66 @@ con.commit()
 
 # ---- removal after upload, through the stand-in bucket
 
-bucket = data / "bucket"
+bucket_dir = data / "bucket"
 
 
 class Bucket:
     def download_file(self, name, key, path):
-        shutil.copyfile(bucket / key, path)
+        shutil.copyfile(bucket_dir / key, path)
 
     def upload_file(self, path, name, key):
-        (bucket / key).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(path, bucket / key)
+        (bucket_dir / key).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, bucket_dir / key)
 
     def head_object(self, Bucket, Key):
-        return {"ContentLength": (bucket / Key).stat().st_size}
+        return {"ContentLength": (bucket_dir / Key).stat().st_size}
 
 
-corpus.r2_client = lambda env: Bucket()
-check("the part uploads", corpus.push_parts(con, data, Bucket(), "stand-in", keep_local=False)[0], 1)
+bucket.r2_client = lambda env: Bucket()
+check("the part uploads", bucket.push_parts(con, data, Bucket(), "stand-in", keep_local=False)[0], 1)
 check("nothing of the part is left on disk", [p for p in files.values() if p.exists()], [])
 d_no, e_no = log_no(D), log_no(E)
 check("removing D with its twin succeeds", remove(D, same_content=True), 0)
 check("D and its twin E are both removed", (state(D), state(E)), ("removed", "removed"))
-check("the bucket's log file holds only C and F", sorted(rows(bucket / f"logs/{shard}", "id")), sorted([C, F]))
-left = set(rows(bucket / f"patches/ActivePatches/{shard}", "HugslibLogId"))
+check("the bucket's log file holds only C and F", sorted(rows(bucket_dir / f"logs/{shard}", "id")), sorted([C, F]))
+left = set(rows(bucket_dir / f"patches/ActivePatches/{shard}", "HugslibLogId"))
 check("the bucket's patch rows are for C and F only", left, {log_no(C), log_no(F)})
 check("no working files are left behind", (data / "removal").exists(), False)
-check("a fresh copy of the index went to the bucket", (bucket / "state" / "index.sqlite").exists(), True)
+check("a fresh copy of the index went to the bucket", (bucket_dir / "state" / "index.sqlite").exists(), True)
 
 # ---- what remains still rebuilds exactly
 
 patches = {}
-table = pq.read_table(bucket / f"patches/HarmonyPatches/{shard}").to_pylist()
+table = pq.read_table(bucket_dir / f"patches/HarmonyPatches/{shard}").to_pylist()
 for row in table:
     patches[row["HarmonyPatchId"]] = (row["Target"], row["Kind"], row["Priority"], row["Method"])
 by_log = {}
-pairs = pq.read_table(bucket / f"patches/ActivePatches/{shard}").to_pylist()
+pairs = pq.read_table(bucket_dir / f"patches/ActivePatches/{shard}").to_pylist()
 for row in pairs:
     by_log.setdefault(row["HugslibLogId"], set()).add(patches[row["HarmonyPatchId"]])
 mismatched = 0
-for row in pq.read_table(bucket / f"logs/{shard}", columns=["hugslib_log_id", "text"]).to_pylist():
-    mismatched += set(corpus.parse_patches(row["text"])) != by_log.get(row["hugslib_log_id"], set())
+for row in pq.read_table(bucket_dir / f"logs/{shard}", columns=["hugslib_log_id", "text"]).to_pylist():
+    mismatched += set(parsing.parse_patches(row["text"])) != by_log.get(row["hugslib_log_id"], set())
 check("the remaining logs' patches still rebuild from the tables", mismatched, 0)
-check("every removal reached Supabase", sorted(path for path, _ in deletes), sorted(f"/rest/v1/logs?id=eq.{g}" for g in (A, B, D, E)))
+check(
+    "every removal reached Supabase",
+    sorted(path for path, _ in deletes),
+    sorted(f"/rest/v1/logs?id=eq.{g}" for g in (A, B, D, E)),
+)
 
 # ---- the durable list, and an index rebuilt from nothing
 
-env = corpus.load_env()
+env = settings.load_env()
 check(
     "each removal is on the durable list with its content hash",
     {g: bool(remote_removed.get(g, {}).get("sha256")) for g in (A, B, D, E)},
     {A: True, B: True, D: True, E: True},
 )
-check("a sync sends up a removal made without Supabase", corpus.sync_removed(con, env, data), (0, 1))
+check("a sync sends up a removal made without Supabase", supabase.sync_removed(con, env, data), (0, 1))
 check("that removal is now on the durable list", "9" * 32 in remote_removed, True)
 
 fresh = Path(tempfile.mkdtemp(prefix="corpus-rebuilt-"))
-rebuilt = corpus.open_db(fresh)
+rebuilt = index_db.open_db(fresh)
 # C was fetched on this second machine, then removed on the first.
 (fresh / "staging" / week).mkdir(parents=True)
 staged_c = fresh / "staging" / week / f"{C}.txt.gz"
@@ -267,8 +274,8 @@ rebuilt.execute(
 )
 rebuilt.commit()
 remote_removed[C] = {"id": C, "sha256": None, "removed_at": "2026-11-19T00:00:00+00:00"}
-check("a rebuilt index learns the whole list", corpus.sync_removed(rebuilt, env, fresh), (6, 0))
-added = corpus.add_gist(rebuilt, {**gist, "id": A}, {"size": 1, "raw_url": "u"})
+check("a rebuilt index learns the whole list", supabase.sync_removed(rebuilt, env, fresh), (6, 0))
+added = listing.add_gist(rebuilt, {**gist, "id": A}, {"size": 1, "raw_url": "u"})
 rebuilt.commit()
 check("a rebuilt index refuses a removed log", added, 0)
 check(
@@ -280,20 +287,30 @@ check(
 sha_a = remote_removed[A]["sha256"]
 again = fresh / "staging" / week / f"{'7' * 32}.txt.gz"
 again.write_bytes(b"the same log under a new id")
-result = corpus.drop_if_removed(rebuilt, again, {"id": "7" * 32, "state": "fetched", "sha256": sha_a}, {sha_a})
+result = download.drop_if_removed(rebuilt, again, download.Download("7" * 32, "fetched", sha256=sha_a), {sha_a})
 rebuilt.commit()
 check(
     "a download with a removed log's content is discarded",
-    (result["state"], again.exists(), rebuilt.execute("SELECT COUNT(*) FROM removed WHERE id = ?", ("7" * 32,)).fetchone()[0]),
+    (
+        result.state,
+        again.exists(),
+        rebuilt.execute("SELECT COUNT(*) FROM removed WHERE id = ?", ("7" * 32,)).fetchone()[0],
+    ),
     ("removed", False, 1),
 )
-other = {"id": "6" * 32, "state": "fetched", "sha256": "f" * 64}
-check("any other download is kept", corpus.drop_if_removed(rebuilt, again, other, {sha_a}), other)
+other = download.Download("6" * 32, "fetched", sha256="f" * 64)
+check("any other download is kept", download.drop_if_removed(rebuilt, again, other, {sha_a}), other)
 
 for number in range(1005):
-    remote_removed[f"{number:032x}"] = {"id": f"{number:032x}", "sha256": None, "removed_at": "2026-01-01T00:00:00+00:00"}
+    remote_removed[f"{number:032x}"] = {
+        "id": f"{number:032x}",
+        "sha256": None,
+        "removed_at": "2026-01-01T00:00:00+00:00",
+    }
 paged = Path(tempfile.mkdtemp(prefix="corpus-paged-"))
-check("a long list is read in pages", corpus.sync_removed(corpus.open_db(paged), env, paged)[0], len(remote_removed))
+check(
+    "a long list is read in pages", supabase.sync_removed(index_db.open_db(paged), env, paged)[0], len(remote_removed)
+)
 shutil.rmtree(fresh, ignore_errors=True)
 shutil.rmtree(paged, ignore_errors=True)
 

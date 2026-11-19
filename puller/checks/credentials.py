@@ -54,7 +54,9 @@ def attempt(name, call):
         return True
     except ClientError as exc:
         error = exc.response.get("Error", {})
-        print(f"R2 {name}: FAILED {error.get('Code')} (HTTP {exc.response.get('ResponseMetadata', {}).get('HTTPStatusCode')})")
+        print(
+            f"R2 {name}: FAILED {error.get('Code')} (HTTP {exc.response.get('ResponseMetadata', {}).get('HTTPStatusCode')})"
+        )
         return False
     except Exception as exc:  # connection and endpoint problems
         print(f"R2 {name}: FAILED {type(exc).__name__}")

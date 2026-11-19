@@ -49,7 +49,10 @@ def blocks(path):
 
 
 con = duckdb.connect()
-print("default secret directory:", con.execute("SELECT current_setting('secret_directory')").fetchone()[0].replace(str(Path.home()), "~"))
+print(
+    "default secret directory:",
+    con.execute("SELECT current_setting('secret_directory')").fetchone()[0].replace(str(Path.home()), "~"),
+)
 con.close()
 
 # Setup step 1: the README's own statement, with the placeholders filled in.
@@ -70,7 +73,10 @@ con.close()
 
 # A new session: nothing but opening the database file.
 con = connect()
-print("views after reopening:", sorted(r[0] for r in con.execute("SELECT view_name FROM duckdb_views() WHERE NOT internal").fetchall()))
+print(
+    "views after reopening:",
+    sorted(r[0] for r in con.execute("SELECT view_name FROM duckdb_views() WHERE NOT internal").fetchall()),
+)
 
 for doc in ("README.md", "docs/tables.md", "docs/queries.md"):
     for sql in blocks(repo / doc):

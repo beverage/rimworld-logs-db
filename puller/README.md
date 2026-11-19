@@ -6,10 +6,29 @@ You only need this folder to maintain the archive. To query it, the [main README
 
 ## What it needs
 
-- Python 3.11 or newer, and [uv](https://docs.astral.sh/uv/). The packing and upload steps use `pyarrow` and `boto3`, which `uv run` installs from the header of `corpus.py`.
+- Python 3.11 or newer, and [uv](https://docs.astral.sh/uv/). The packing, upload and removal steps use `pyarrow` and `boto3`, which `uv run` installs from the header of `corpus.py`.
 - A GitHub token for listing gists. It is read from `GITHUB_TOKEN` or `GH_TOKEN`, or from the `gh` CLI if you are signed in.
 - An R2 bucket and an API token with "Object Read & Write" on it.
 - A Supabase project with [schema.sql](schema.sql) applied, and its secret key.
+
+## How the code is laid out
+
+`corpus.py` is only the entry point. The work is in the `logsdb` package beside it, one module per step of the pipeline:
+
+| Module | What it does |
+|---|---|
+| `listing.py` | `index`: lists the gists into the local index |
+| `download.py` | `fetch`: downloads each log once |
+| `parsing.py` | reads the mod list, game version and Harmony patches off a log |
+| `packing.py` | `pack`: writes a finished week as Parquet |
+| `bucket.py` | `push`: uploads a week to R2 and drops the local copy |
+| `supabase.py` | `sync`: the `logs` and `removed_logs` tables |
+| `removal.py` | `remove`: takes one log out |
+| `pipeline.py` | `run`, which chains the steps week by week, and `status` |
+
+Five smaller modules support those: `index_db.py` (the local SQLite index), `layout.py` (where files live on disk and in the bucket), `settings.py` (names, defaults and the env file), `common.py` (messages, timestamps and errors) and `cli.py` (the command line).
+
+Each module opens with a note on why its step works the way it does, so that is the place to start reading. `parsing.py` has no dependencies and is the part most likely to be useful on its own.
 
 ## The env file
 
@@ -105,3 +124,5 @@ Run `remove` between runs. If a `run` is working on the same week at that moment
 | `uv run puller/checks/packed.py` | packed files on disk | Every log's patch set rebuilds exactly from the four patch tables. |
 | `uv run puller/checks/bucket.py` | the env file and the index | The bucket holds every uploaded part, and its row counts match the index. |
 | `uv run puller/checks/docs.py` | the env file | Every SQL block in the docs runs against the bucket, from a fresh setup. |
+
+`uvx ruff check puller` lints the code and `uvx ruff format puller` formats it, with the settings in `ruff.toml`.
