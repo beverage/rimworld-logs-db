@@ -27,3 +27,15 @@ create index if not exists logs_game_version on public.logs (game_version);
 -- bypasses row-level security. A policy "to authenticated" would open the
 -- table to anyone who signs up while sign-ups are enabled.
 alter table public.logs enable row level security;
+
+-- Logs taken out of the archive. This is the list's home: the puller copies
+-- it into its local index before listing anything, so an index rebuilt from
+-- nothing, or one on another machine, still refuses these logs. The hash
+-- catches the same log uploaded again under a new id.
+create table if not exists public.removed_logs (
+  id          text primary key,       -- gist id
+  sha256      text,                   -- hash of the removed log's text, when it was known
+  removed_at  timestamptz not null default now()
+);
+
+alter table public.removed_logs enable row level security;

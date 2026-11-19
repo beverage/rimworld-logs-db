@@ -56,10 +56,15 @@ WHY IT IS SHAPED THIS WAY
           any point picks up where it left off.
 
   remove  Takes one log out on request. The week's files are rewritten
-          without it, its Supabase row is deleted, and its id goes on a list
-          the index consults, so a later pull does not bring it back. The
-          patch dictionary is left alone: it names mods' methods, not people,
-          and its numbers must not move.
+          without it, its Supabase row is deleted, and its id and content
+          hash go on a removed list, so a later pull does not bring it back.
+          The list's home is the Supabase table removed_logs, because an
+          index can be rebuilt from nothing and must still honour it: index
+          and run copy the list down before they list anything, and fetch
+          discards a download whose hash is on it, which catches the same
+          log uploaded again under a new id. The patch dictionary is left
+          alone: it names mods' methods, not people, and its numbers must
+          not move.
 
   Secrets come from an env file outside every repo, by default
   ~/.config/hugslib-corpus/env, and are never printed.
@@ -177,7 +182,8 @@ CREATE TABLE IF NOT EXISTS parts (
 );
 CREATE TABLE IF NOT EXISTS removed (
     id         TEXT PRIMARY KEY,
-    removed_at TEXT NOT NULL
+    removed_at TEXT NOT NULL,
+    sha256     TEXT
 );
 """
 
@@ -211,6 +217,8 @@ def open_db(data: Path) -> sqlite3.Connection:
     for name, kind in (("log_no", "INTEGER"), ("synced", "INTEGER NOT NULL DEFAULT 0")):
         if name not in present:
             con.execute(f"ALTER TABLE gists ADD COLUMN {name} {kind}")
+    if "sha256" not in {column[1] for column in con.execute("PRAGMA table_info(removed)")}:
+        con.execute("ALTER TABLE removed ADD COLUMN sha256 TEXT")
     return con
 
 
@@ -313,6 +321,15 @@ def cmd_index(args) -> int:
         say("no GitHub token found: unauthenticated calls are limited to 60 an hour")
     since = f"{args.since}T00:00:00Z"
     dt.datetime.strptime(since, "%Y-%m-%dT%H:%M:%SZ")
+    if not args.no_supabase:
+        try:
+            learned, sent = sync_removed(con, load_env(), args.data)
+        except (ConfigError, UploadError) as exc:
+            say(f"cannot read the removed list, so nothing was listed: {exc}")
+            say("  --no-supabase lists without it, at the risk of indexing a removed log")
+            return 1
+        if learned or sent:
+            say(f"removed list: {learned} learned, {sent} sent")
     page, last_page, pages, new, known, noted, finished = args.start_page, 0, 0, 0, 0, 0, False
     try:
         with cf.ThreadPoolExecutor(max_workers=args.workers) as pool:
@@ -510,11 +527,15 @@ def cmd_fetch(args) -> int:
 
     throttle, stop = Throttle(args.rps), threading.Event()
     counts, received, started, last_note, interrupted = Counter(), 0, time.monotonic(), time.monotonic(), False
+    removed_hashes = {sha for (sha,) in con.execute("SELECT sha256 FROM removed WHERE sha256 IS NOT NULL")}
+    week_of_gist = {row[0]: row[2] for row in rows}
 
     def record(result: dict) -> None:
         nonlocal received
         if result["state"] is None:
             return
+        staged = staging / week_of_gist[result["id"]] / f"{result['id']}.txt.gz"
+        result = drop_if_removed(con, staged, result, removed_hashes)
         counts[result["state"]] += 1
         received += result.get("bytes") or 0
         con.execute(
@@ -1067,7 +1088,7 @@ def supabase_request(env: dict[str, str], method: str, path: str, body=None, pre
     except urllib.error.HTTPError as exc:
         detail = exc.read()[:300].decode("utf-8", "replace")
         if exc.code == 404 and "PGRST205" in detail:
-            raise ConfigError("the Supabase logs table does not exist yet: apply schema.sql first") from exc
+            raise ConfigError("a Supabase table is missing: apply schema.sql in the project's SQL editor") from exc
         raise UploadError(f"Supabase answered HTTP {exc.code}: {detail}") from exc
 
 
@@ -1101,12 +1122,63 @@ def sync_logs(con: sqlite3.Connection, env: dict[str, str]) -> int:
             }
             for row in rows
         ]
-        supabase_request(
-            env, "POST", "/rest/v1/logs?on_conflict=id", body, "resolution=merge-duplicates,return=minimal"
-        )
+        supabase_request(env, "POST", "/rest/v1/logs?on_conflict=id", body, UPSERT)
         con.executemany("UPDATE gists SET synced = 1 WHERE id = ?", [(row[0],) for row in rows])
         con.commit()
         synced += len(rows)
+
+
+UPSERT = "resolution=merge-duplicates,return=minimal"
+
+
+def sync_removed(con: sqlite3.Connection, env: dict[str, str], data: Path) -> tuple[int, int]:
+    """Merge the removed list with its copy in Supabase, both ways.
+
+    Returns how many removals this index learned and how many it sent up. A
+    log learned this way is marked removed here; whoever removed it has
+    already rewritten the files in the bucket.
+    """
+    remote, offset = {}, 0
+    while True:
+        page = json.loads(
+            supabase_request(
+                env, "GET", f"/rest/v1/removed_logs?select=id,sha256,removed_at&order=id&limit=1000&offset={offset}"
+            )
+        )
+        remote.update({row["id"]: row for row in page})
+        if len(page) < 1000:
+            break
+        offset += 1000
+    local = {row[0]: row for row in con.execute("SELECT id, removed_at, sha256 FROM removed")}
+    learned = [row for gist_id, row in remote.items() if gist_id not in local]
+    for row in learned:
+        staged = con.execute("SELECT week FROM gists WHERE id = ? AND state = 'fetched'", (row["id"],)).fetchone()
+        if staged:
+            (data / "staging" / staged[0] / f"{row['id']}.txt.gz").unlink(missing_ok=True)
+        con.execute(
+            "INSERT OR IGNORE INTO removed (id, removed_at, sha256) VALUES (?, ?, ?)",
+            (row["id"], row["removed_at"], row.get("sha256")),
+        )
+        con.execute("UPDATE gists SET state = 'removed', synced = 0 WHERE id = ? AND state != 'removed'", (row["id"],))
+    con.commit()
+    unsent = [
+        {"id": gist_id, "removed_at": row[1], "sha256": row[2]} for gist_id, row in local.items() if gist_id not in remote
+    ]
+    for start in range(0, len(unsent), 500):
+        supabase_request(env, "POST", "/rest/v1/removed_logs?on_conflict=id", unsent[start : start + 500], UPSERT)
+    return len(learned), len(unsent)
+
+
+def drop_if_removed(con: sqlite3.Connection, staged: Path, result: dict, hashes: set) -> dict:
+    """Discard a download whose content is on the removed list, whatever id it came under."""
+    if result.get("state") != "fetched" or result.get("sha256") not in hashes:
+        return result
+    staged.unlink(missing_ok=True)
+    con.execute(
+        "INSERT OR IGNORE INTO removed (id, removed_at, sha256) VALUES (?, ?, ?)",
+        (result["id"], now_iso(), result["sha256"]),
+    )
+    return {**result, "state": "removed"}
 
 
 def cmd_push(args) -> int:
@@ -1135,6 +1207,8 @@ def cmd_run(args) -> int:
     if use_supabase:
         supabase_request(env, "GET", "/rest/v1/logs?select=id&limit=1")
     con = open_db(args.data)
+    if use_supabase:
+        sync_removed(con, env, args.data)
     push_parts(con, args.data, client, bucket, keep_local=False)
 
     finished = pushed = synced = 0
@@ -1295,7 +1369,14 @@ def cmd_remove(args) -> int:
             (args.data / "staging" / week / f"{gist_id}.txt.gz").unlink(missing_ok=True)
         if args.dry_run:
             continue
-        con.execute("INSERT OR REPLACE INTO removed (id, removed_at) VALUES (?, ?)", (gist_id, now_iso()))
+        entry = {"id": gist_id, "removed_at": now_iso(), "sha256": sha256}
+        if not args.no_supabase:
+            env = env or load_env()
+            supabase_request(env, "POST", "/rest/v1/removed_logs?on_conflict=id", [entry], UPSERT)
+        con.execute(
+            "INSERT OR REPLACE INTO removed (id, removed_at, sha256) VALUES (?, ?, ?)",
+            (gist_id, entry["removed_at"], sha256),
+        )
         con.execute("UPDATE gists SET state = 'removed', synced = 0, error = NULL WHERE id = ?", (gist_id,))
         con.execute("DELETE FROM facts WHERE id = ?", (gist_id,))
         if state == "packed":
@@ -1356,6 +1437,7 @@ def main(argv: list[str] | None = None) -> int:
     index.add_argument("--start-page", type=int, default=1, help="list page to start from, to resume a walk")
     index.add_argument("--max-pages", type=int, default=0, help="read at most this many pages")
     index.add_argument("--workers", type=int, default=1, help="list pages read at once (see WHY: index)")
+    index.add_argument("--no-supabase", action="store_true", help="list without first fetching the removed list")
     index.set_defaults(run=cmd_index)
 
     fetch = commands.add_parser("fetch", help="download pending logs into staging")

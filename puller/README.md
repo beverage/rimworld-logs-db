@@ -82,8 +82,10 @@ The dry run downloads the week's files, reports how many rows would go, and chan
 
 1. Rewrites three of that week's files without the log: the log file, `HugslibLogs` and `ActivePatches`. Each is uploaded over the old one and its stored size is checked.
 2. Deletes the log's row from the Supabase table.
-3. Puts the gist id on a removed list in the index, so no later `index` or `run` fetches it again. This works for a log the index has not reached yet.
+3. Adds the gist id and the log's content hash to the `removed_logs` table in Supabase, and to the local index. This works for a log the index has not reached yet.
 4. Copies the updated index to the bucket.
+
+The Supabase table is the list's home, because the local index can be lost or rebuilt. `index` and `run` copy the table down before they list anything, so a fresh index on any machine still refuses a removed log. `fetch` also discards a download whose hash is on the list, which catches the same log uploaded again under a new id. If `index` cannot read the table it stops; `--no-supabase` overrides that.
 
 The patch dictionary is not rewritten. It lists mods' patch methods, which are not about any player, and its numbers must stay fixed.
 

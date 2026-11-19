@@ -16,11 +16,13 @@ import gzip
 import hashlib
 import http.server
 import importlib.util
+import json
 import os
 import shutil
 import sys
 import tempfile
 import threading
+import urllib.parse
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -110,6 +112,7 @@ def remove(*gists, **options):
 
 # A local server stands in for Supabase, and a folder for the bucket.
 deletes = []
+remote_removed = {}  # the removed_logs table, by gist id
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -120,6 +123,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(204)
         self.send_header("Content-Length", "0")
         self.end_headers()
+
+    def do_POST(self):
+        for row in json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0")))):
+            remote_removed[row["id"]] = row
+        self.send_response(201)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_GET(self):
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        offset, limit = int(query["offset"][0]), int(query["limit"][0])
+        listed = sorted(remote_removed.values(), key=lambda row: row["id"])[offset : offset + limit]
+        body = json.dumps(listed).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def log_message(self, *args):
         pass
@@ -222,6 +243,59 @@ for row in pq.read_table(bucket / f"logs/{shard}", columns=["hugslib_log_id", "t
     mismatched += set(corpus.parse_patches(row["text"])) != by_log.get(row["hugslib_log_id"], set())
 check("the remaining logs' patches still rebuild from the tables", mismatched, 0)
 check("every removal reached Supabase", sorted(path for path, _ in deletes), sorted(f"/rest/v1/logs?id=eq.{g}" for g in (A, B, D, E)))
+
+# ---- the durable list, and an index rebuilt from nothing
+
+env = corpus.load_env()
+check(
+    "each removal is on the durable list with its content hash",
+    {g: bool(remote_removed.get(g, {}).get("sha256")) for g in (A, B, D, E)},
+    {A: True, B: True, D: True, E: True},
+)
+check("a sync sends up a removal made without Supabase", corpus.sync_removed(con, env, data), (0, 1))
+check("that removal is now on the durable list", "9" * 32 in remote_removed, True)
+
+fresh = Path(tempfile.mkdtemp(prefix="corpus-rebuilt-"))
+rebuilt = corpus.open_db(fresh)
+# C was fetched on this second machine, then removed on the first.
+(fresh / "staging" / week).mkdir(parents=True)
+staged_c = fresh / "staging" / week / f"{C}.txt.gz"
+staged_c.write_bytes(b"staged")
+rebuilt.execute(
+    "INSERT INTO gists (id, created_at, week, size, raw_url, uploader, state) VALUES (?, ?, ?, 1, 'u', 'hugslib', 'fetched')",
+    (C, "2026-09-29T10:00:02Z", week),
+)
+rebuilt.commit()
+remote_removed[C] = {"id": C, "sha256": None, "removed_at": "2026-11-19T00:00:00+00:00"}
+check("a rebuilt index learns the whole list", corpus.sync_removed(rebuilt, env, fresh), (6, 0))
+added = corpus.add_gist(rebuilt, {**gist, "id": A}, {"size": 1, "raw_url": "u"})
+rebuilt.commit()
+check("a rebuilt index refuses a removed log", added, 0)
+check(
+    "a log removed elsewhere is dropped here, staged copy included",
+    (rebuilt.execute("SELECT state FROM gists WHERE id = ?", (C,)).fetchone()[0], staged_c.exists()),
+    ("removed", False),
+)
+
+sha_a = remote_removed[A]["sha256"]
+again = fresh / "staging" / week / f"{'7' * 32}.txt.gz"
+again.write_bytes(b"the same log under a new id")
+result = corpus.drop_if_removed(rebuilt, again, {"id": "7" * 32, "state": "fetched", "sha256": sha_a}, {sha_a})
+rebuilt.commit()
+check(
+    "a download with a removed log's content is discarded",
+    (result["state"], again.exists(), rebuilt.execute("SELECT COUNT(*) FROM removed WHERE id = ?", ("7" * 32,)).fetchone()[0]),
+    ("removed", False, 1),
+)
+other = {"id": "6" * 32, "state": "fetched", "sha256": "f" * 64}
+check("any other download is kept", corpus.drop_if_removed(rebuilt, again, other, {sha_a}), other)
+
+for number in range(1005):
+    remote_removed[f"{number:032x}"] = {"id": f"{number:032x}", "sha256": None, "removed_at": "2026-01-01T00:00:00+00:00"}
+paged = Path(tempfile.mkdtemp(prefix="corpus-paged-"))
+check("a long list is read in pages", corpus.sync_removed(corpus.open_db(paged), env, paged)[0], len(remote_removed))
+shutil.rmtree(fresh, ignore_errors=True)
+shutil.rmtree(paged, ignore_errors=True)
 
 server.shutdown()
 shutil.rmtree(data, ignore_errors=True)
