@@ -30,6 +30,7 @@ Building the archive also needs three things outside the repo:
 | `sql/` | `views.sql` for readers, `supabase-schema.sql` for the Supabase project |
 | `docs/` | this page, the table and query references, and the architecture diagram |
 | `pyproject.toml`, `uv.lock` | the package's metadata, dependencies and tool settings |
+| `.github/workflows/tests.yml` | the lint and test run GitHub starts on every push |
 
 The package has one module per step of the pipeline:
 
@@ -156,6 +157,8 @@ No test touches GitHub, R2 or Supabase. A local HTTP server stands in for GitHub
 | `test_cli.py` | arguments, exit codes and `RESULT` lines |
 
 `uv run ruff check` lints the code and `uv run ruff format` formats it. The settings for both, and for pytest, are in `pyproject.toml`.
+
+GitHub Actions runs the lint, the format check and the tests on every push to `main` and on every pull request, on Python 3.11 and 3.13. The workflow is [.github/workflows/tests.yml](../.github/workflows/tests.yml). It uses no keys, so a pull request from a fork runs the same way.
 
 ## Checks against the real archive
 
