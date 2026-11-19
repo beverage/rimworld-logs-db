@@ -119,7 +119,9 @@ Players uploaded these logs to get help with a problem. HugsLib tells them the l
 
 ## Asking for a log to be removed
 
-If one of these logs is yours and you want it out of the archive, email its link to rimworld@beverage.me. The link is the `gist.github.com` address HugsLib gave you when you shared the log. You do not need to say why, and you do not need to prove the log is yours.
+If one of these logs is yours and you want it out of the archive, send its link to MrBeverage. The fastest way is a direct message on the [RimWorld Discord](https://discord.gg/rimworld); email to rimworld@beverage.me works too. Use a direct message, not a public channel, so the link stays between us.
+
+The link is the `gist.github.com` address HugsLib gave you when you shared the log. You do not need to say why, and you do not need to prove the log is yours.
 
 The log's text and its rows in every table are deleted within 30 days. Its id and a hash of its text stay on a list, so the archive does not fetch the same log again, including a second upload of it under another link.
 
