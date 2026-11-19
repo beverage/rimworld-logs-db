@@ -20,12 +20,15 @@ from .index_db import open_db
 from .settings import load_env
 
 
-def next_week(con) -> tuple[str, int] | None:
-    """The newest finished week with logs still to download or pack, and how many are waiting."""
+def next_week(con, oldest: str | None = None) -> tuple[str, int] | None:
+    """The newest finished week with logs still to download or pack, and how many are waiting.
+
+    `oldest` is an ISO week such as 2026-W21; weeks before it are left alone.
+    """
     return con.execute(
         "SELECT week, SUM(state = 'pending') FROM gists WHERE state IN ('pending', 'fetched') AND week != ?"
-        " GROUP BY week ORDER BY week DESC LIMIT 1",
-        (week_of(now_iso()),),
+        " AND week >= ? GROUP BY week ORDER BY week DESC LIMIT 1",
+        (week_of(now_iso()), oldest or ""),
     ).fetchone()
 
 
@@ -38,12 +41,17 @@ def run(
     level: int = 9,
     no_supabase: bool = False,
     backup_every: int = 8,
+    since: str | None = None,
 ) -> int:
     """Process weeks until none is left, or until `weeks` of them are done.
+
+    `since` is a date as YYYY-MM-DD: weeks before the one containing it are
+    left alone, however often the run is restarted.
 
     Returns 0 when it ran to the end, and otherwise the code of the step that
     stopped it: 2 means the raw host kept refusing downloads.
     """
+    oldest = week_of(f"{since}T00:00:00Z") if since else None
     env = load_env()
     client = bucket.r2_client(env)
     bucket_name = env["R2_BUCKET"]
@@ -58,7 +66,7 @@ def run(
 
     finished = pushed = synced = 0
     while not weeks or finished < weeks:
-        newest = next_week(con)
+        newest = next_week(con, oldest)
         if newest is None:
             break
         week, waiting = newest

@@ -74,6 +74,7 @@ A bucket created in R2's EU jurisdiction is served only from the `.eu.` host. Th
 | `uv run rimworld-logs-db index --new` | Lists only uploads newer than the index already holds. |
 | `uv run rimworld-logs-db run` | For each week, newest first: download, pack, upload, sync. |
 | `uv run rimworld-logs-db run --weeks 4` | The same, stopping after four weeks. |
+| `uv run rimworld-logs-db run --since 2026-05-19` | The same, leaving weeks older than the one containing that date. A restart keeps the same bound. |
 | `uv run rimworld-logs-db remove <gist link>` | Takes one log out of the archive. See below. |
 | `uv run rimworld-logs-db status` | Counts by state, and what is waiting to upload or sync. |
 
@@ -141,7 +142,7 @@ Run `remove` between runs. If a `run` is working on the same week at that moment
 uv run pytest
 ```
 
-The suite is 88 tests and takes about 12 seconds. Three download tests wait out real pauses of two to four seconds each, which is most of that time.
+The suite is 93 tests and takes about 12 seconds. Three download tests wait out real pauses of two to four seconds each, which is most of that time.
 
 No test touches GitHub, R2 or Supabase. A local HTTP server stands in for GitHub's raw file host, another for Supabase's REST interface, and a folder for the bucket. Those fixtures are in `tests/conftest.py`, along with `archive`, which packs six made-up logs into a part for the packing and removal tests to work on.
 
@@ -153,6 +154,7 @@ No test touches GitHub, R2 or Supabase. A local HTTP server stands in for GitHub
 | `test_packing.py` | the five Parquet files of a part, and the patch numbering |
 | `test_supabase.py` | upserting log rows, and merging the removed list both ways |
 | `test_removal.py` | removing a log on disk, in the bucket and before it was ever listed |
+| `test_pipeline.py` | which week a run takes next, and its date bound |
 | `test_settings.py` | the env file, and where files live |
 | `test_cli.py` | arguments, exit codes and `RESULT` lines |
 

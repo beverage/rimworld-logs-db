@@ -80,6 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = commands.add_parser("run", help="fetch, pack, push and sync week by week, newest first")
     run.add_argument("--weeks", type=int, default=0, help="stop after this many weeks")
+    run.add_argument("--since", type=iso_date, help="leave weeks older than the one containing this date")
     run.add_argument("--workers", type=int, default=4, help="downloads in flight at once")
     run.add_argument("--rps", type=float, default=6.0, help="requests a second across all workers")
     run.add_argument("--max-mb", type=int, default=64, help="skip logs larger than this")
@@ -87,7 +88,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--no-supabase", action="store_true", help="skip Supabase; `sync` can catch up later")
     run.add_argument("--backup-every", type=int, default=8, help="copy the index to the bucket every N weeks")
     run.set_defaults(
-        run=lambda a: pipeline.run(a.data, a.weeks, a.workers, a.rps, a.max_mb, a.level, a.no_supabase, a.backup_every)
+        run=lambda a: pipeline.run(
+            a.data, a.weeks, a.workers, a.rps, a.max_mb, a.level, a.no_supabase, a.backup_every, a.since
+        )
     )
 
     remove = commands.add_parser("remove", help="take logs out of the archive, by gist link or id")
