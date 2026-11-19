@@ -59,6 +59,8 @@ def run(
     if not no_supabase:
         supabase.request(env, "GET", "/rest/v1/logs?select=id&limit=1")
     con = open_db(data)
+    # Before anything is written anywhere: an index that is behind the bucket must not run.
+    bucket.ensure_current(con, client, bucket_name)
     if not no_supabase:
         supabase.sync_removed(con, env, data)
     # A part packed by an earlier run that stopped before uploading it.

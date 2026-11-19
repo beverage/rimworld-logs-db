@@ -20,6 +20,10 @@ class GiveUp(Exception):
     """A request that kept failing after every retry."""
 
 
+class OutOfDate(Exception):
+    """The bucket holds parts this index has no record of: another index is building the archive."""
+
+
 def say(message: str) -> None:
     """Progress goes to stderr, so stdout carries only a command's results."""
     print(message, file=sys.stderr, flush=True)

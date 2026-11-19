@@ -18,6 +18,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from botocore.exceptions import ClientError
 
 from rimworld_logs_db import bucket, download, index_db, layout, packing, settings
 from rimworld_logs_db.common import week_of
@@ -187,10 +188,13 @@ def fake_supabase(tmp_path, monkeypatch):
 
 
 class FolderBucket:
-    """A folder with the three S3 calls the package makes."""
+    """A folder with the S3 calls the package makes."""
 
     def __init__(self, root: Path) -> None:
         self.root = root
+
+    def head_bucket(self, Bucket: str) -> dict:
+        return {}
 
     def download_file(self, bucket_name: str, key: str, path: str) -> None:
         shutil.copyfile(self.root / key, path)
@@ -200,7 +204,18 @@ class FolderBucket:
         shutil.copyfile(path, self.root / key)
 
     def head_object(self, Bucket: str, Key: str) -> dict:
+        if not (self.root / Key).is_file():
+            raise ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject")
         return {"ContentLength": (self.root / Key).stat().st_size}
+
+    def get_paginator(self, operation: str) -> FolderBucket:
+        assert operation == "list_objects_v2"
+        return self
+
+    def paginate(self, Bucket: str, Prefix: str = ""):
+        files = sorted(path for path in self.root.rglob("*") if path.is_file()) if self.root.exists() else []
+        keys = [path.relative_to(self.root).as_posix() for path in files]
+        yield {"Contents": [{"Key": key} for key in keys if key.startswith(Prefix)]}
 
 
 @pytest.fixture

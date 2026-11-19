@@ -109,6 +109,8 @@ class Removal:
         in_bucket = bool(uploaded and uploaded[0])
         if in_bucket and self.client is None:
             self.client = bucket.r2_client(self.settings())
+            # An old copy of the index would end by backing itself up over the current one.
+            bucket.ensure_current(self.con, self.client, self.settings()["R2_BUCKET"])
         local = part_paths(self.data, shard)
         targets = {
             LOGS: ("id", gist_id, {}),

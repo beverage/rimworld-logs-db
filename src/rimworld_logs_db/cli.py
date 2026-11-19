@@ -13,7 +13,7 @@ import sqlite3
 from pathlib import Path
 
 from . import bucket, download, listing, packing, pipeline, removal, supabase
-from .common import ConfigError, UploadError, say
+from .common import ConfigError, OutOfDate, UploadError, say
 from .settings import DATA_VARIABLE, DEFAULT_DATA, RELEASE_1_6
 
 
@@ -113,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
     args.data = args.data.expanduser()
     try:
         return args.run(args)
-    except (OSError, sqlite3.Error, ConfigError, UploadError) as exc:
+    except (OSError, sqlite3.Error, ConfigError, UploadError, OutOfDate) as exc:
         say(f"error: {exc}")
         return 1
     except Exception as exc:

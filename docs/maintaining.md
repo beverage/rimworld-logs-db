@@ -110,6 +110,21 @@ state/index.sqlite
 
 A week normally has one part. A second part appears when logs for that week are fetched later, for example after retrying failed downloads.
 
+## One machine builds the archive
+
+Log numbers, Harmony patch ids and part names all come from `index.sqlite`. A second index, whether a new one or an old copy, would hand out the same ones again and write its parts over the first one's. Two checks stop that:
+
+- `run`, `push` and `remove` first compare the parts in the bucket with the parts the index knows. If the bucket holds a part the index has no record of, the command stops before it writes anything and names the newest such part.
+- `push` never replaces an object in the bucket unless it has the same size as the file it packed. That happens only when an earlier push of the same part was cut short.
+
+To move the work to another machine:
+
+1. Stop the run on the old machine and wait for it to exit.
+2. Copy `index.sqlite` from its data folder into the new machine's. If the old machine is gone, download `state/index.sqlite` from the bucket.
+3. Copy the env file, and set the old machine's index aside so nothing uses it by mistake.
+
+A backup that is older than the newest part in the bucket is refused by the first check, like any other index that is behind. On a machine that might be lost, run with `--backup-every 1`, so the backup is written after every week.
+
 ## Removing a log
 
 When someone asks for their log to be taken out, pass its link or its gist id:
@@ -142,7 +157,7 @@ Run `remove` between runs. If a `run` is working on the same week at that moment
 uv run pytest
 ```
 
-The suite is 93 tests and takes about 12 seconds. Three download tests wait out real pauses of two to four seconds each, which is most of that time.
+The suite is 101 tests and takes about 12 seconds. Three download tests wait out real pauses of two to four seconds each, which is most of that time.
 
 No test touches GitHub, R2 or Supabase. A local HTTP server stands in for GitHub's raw file host, another for Supabase's REST interface, and a folder for the bucket. Those fixtures are in `tests/conftest.py`, along with `archive`, which packs six made-up logs into a part for the packing and removal tests to work on.
 
@@ -155,6 +170,7 @@ No test touches GitHub, R2 or Supabase. A local HTTP server stands in for GitHub
 | `test_supabase.py` | upserting log rows, and merging the removed list both ways |
 | `test_removal.py` | removing a log on disk, in the bucket and before it was ever listed |
 | `test_pipeline.py` | which week a run takes next, and its date bound |
+| `test_bucket.py` | pushing a part, resuming a push, and refusing an index that is behind the bucket |
 | `test_settings.py` | the env file, and where files live |
 | `test_cli.py` | arguments, exit codes and `RESULT` lines |
 
