@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Builds an archive of public HugsLib logs for RimWorld that can be queried with SQL"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "MrBeverage", email = "rimworld@beverage.me" }]
 dependencies = [
     "boto3>=1.36",
