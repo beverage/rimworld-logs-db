@@ -94,7 +94,6 @@ for path in sorted(glob.glob(f"{root}/shards/*/*.parquet")):
 check("every log's patches rebuild exactly from the tables", mismatched == 0, f"{logs} logs, {mismatched} mismatched")
 check("HugslibLogs matches the log files", wrong_guid == 0 and len(log_guid) == logs, f"{len(log_guid)} rows")
 check("row count equals the parser's count", active_rows == expected_rows, f"{expected_rows}")
-check("log ids run 1..N", sorted(log_guid) == list(range(1, logs + 1)))
 
 print(f"-- files: ActivePatches {len(parts('ActivePatches'))} parts, {size('ActivePatches')} bytes, {size('ActivePatches') / active_rows:.2f} bytes a row")
 print(f"-- files: HarmonyPatches {size('HarmonyPatches')} bytes for {len(patches)} patches, {size('HarmonyPatches') / len(patches):.1f} bytes each")

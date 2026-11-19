@@ -36,6 +36,7 @@ A bucket created in R2's EU jurisdiction is served only from the `.eu.` host. Th
 | `corpus.py index --new` | Lists only uploads newer than the index already holds. |
 | `uv run corpus.py run` | For each week, newest first: download, pack, upload, sync. |
 | `uv run corpus.py run --weeks 4` | The same, stopping after four weeks. |
+| `uv run corpus.py remove <gist link>` | Takes one log out of the archive. See below. |
 | `corpus.py status` | Counts by state, and what is waiting to upload or sync. |
 
 `run` chains four steps that also exist as commands of their own, for redoing one by hand: `fetch`, `pack`, `push` and `sync`. Every command resumes where an earlier one stopped. The week still in progress is skipped, because uploads are still arriving for it.
@@ -68,11 +69,36 @@ state/index.sqlite
 
 A week normally has one part. A second part appears when logs for that week are fetched later, for example after retrying failed downloads.
 
+## Removing a log
+
+When someone asks for their log to be taken out, pass its link or its gist id:
+
+```
+uv run puller/corpus.py remove https://gist.github.com/HugsLibRecordKeeper/<gist id> --dry-run
+uv run puller/corpus.py remove https://gist.github.com/HugsLibRecordKeeper/<gist id>
+```
+
+The dry run downloads the week's files, reports how many rows would go, and changes nothing. The real run then does four things:
+
+1. Rewrites three of that week's files without the log: the log file, `HugslibLogs` and `ActivePatches`. Each is uploaded over the old one and its stored size is checked.
+2. Deletes the log's row from the Supabase table.
+3. Puts the gist id on a removed list in the index, so no later `index` or `run` fetches it again. This works for a log the index has not reached yet.
+4. Copies the updated index to the bucket.
+
+The patch dictionary is not rewritten. It lists mods' patch methods, which are not about any player, and its numbers must stay fixed.
+
+A dry run against a real week of 2,123 logs took 16 seconds and would have dropped 1 log row and 31 patch rows.
+
+`--same-content` also removes other uploads of the identical log, found by the `sha256` column. Without it, `remove` reports how many there are.
+
+Run `remove` between runs. If a `run` is working on the same week at that moment, its files are still on disk and the two would be writing the same part.
+
 ## Tests and checks
 
 | Script | Needs | What it proves |
 |---|---|---|
 | `python3 puller/tests/offline.py` | nothing | The parsers, the refusal handling and the Supabase requests, against a local test server. |
+| `uv run puller/tests/removal.py` | nothing | Removing a log on disk and after upload, with a folder standing in for the bucket. |
 | `uv run puller/checks/credentials.py` | the env file | The R2 token can list, write, read and delete; the Supabase table answers. |
 | `uv run puller/checks/packed.py` | packed files on disk | Every log's patch set rebuilds exactly from the four patch tables. |
 | `uv run puller/checks/bucket.py` | the env file and the index | The bucket holds every uploaded part, and its row counts match the index. |

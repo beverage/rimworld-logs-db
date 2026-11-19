@@ -8,7 +8,7 @@ One row per uploaded log.
 
 | Column | Type | Meaning |
 |---|---|---|
-| `hugslib_log_id` | integer | This archive's number for the log. Joins to `HugslibLogId` in the patch tables. |
+| `hugslib_log_id` | integer | This archive's number for the log. Joins to `HugslibLogId` in the patch tables. Numbers are never reused, so a removed log leaves a gap. |
 | `id` | text | The gist id on GitHub. The same value as `GUID` in `HugslibLogs`. |
 | `created_at` | timestamp | When the log was uploaded. |
 | `week` | text | The ISO week of the upload, such as `2026-W46`. Filtering on it limits which files are read. |

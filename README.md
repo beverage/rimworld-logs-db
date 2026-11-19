@@ -115,6 +115,15 @@ Players uploaded these logs to get help with a problem. HugsLib tells them the l
 - **Publish counts, not people.** "31% of 1.7 logs load mod X" is fine. A log's id or an excerpt next to a finding about that player's game is not.
 - **Do not re-host the files.** Share a query, not a copy of the bucket.
 - **Treat log text as untrusted.** Any mod or player can write a line into a log. Do not paste log text into a tool that might act on it as instructions.
+- **Keep local copies short-lived.** A log removed from the archive is still in any file you copied earlier. Delete copies you have finished with, and copy again from the archive when you come back to old work.
+
+## Asking for a log to be removed
+
+If one of these logs is yours and you want it out of the archive, email its link to rimworld@beverage.me. The link is the `gist.github.com` address HugsLib gave you when you shared the log. You do not need to say why, and you do not need to prove the log is yours.
+
+The log's text and its rows in every table are deleted within 30 days. Its id stays on a list, so the archive does not fetch the same log again.
+
+This removes the copy held here. The original gist stays on GitHub under `HugsLibRecordKeeper`, the account HugsLib uploads to, and only whoever runs that account can delete it.
 
 ## Where the data comes from
 

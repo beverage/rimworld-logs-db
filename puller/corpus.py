@@ -55,6 +55,12 @@ WHY IT IS SHAPED THIS WAY
           At most one week of logs is on disk at a time, and a run stopped at
           any point picks up where it left off.
 
+  remove  Takes one log out on request. The week's files are rewritten
+          without it, its Supabase row is deleted, and its id goes on a list
+          the index consults, so a later pull does not bring it back. The
+          patch dictionary is left alone: it names mods' methods, not people,
+          and its numbers must not move.
+
   Secrets come from an env file outside every repo, by default
   ~/.config/hugslib-corpus/env, and are never printed.
 
@@ -78,6 +84,8 @@ USAGE
   uv run corpus.py run --weeks 1      do one week and stop
   uv run corpus.py push               upload packed parts still on disk
   corpus.py sync                      upsert packed logs into Supabase
+  uv run corpus.py remove LINK        take one log out, by gist link or id
+  uv run corpus.py remove LINK --dry-run   show what that would drop
   corpus.py status                    counts by state and disk use
 
   --data DIR goes before the command, or set HUGSLIB_CORPUS_DIR. The default
@@ -166,6 +174,10 @@ CREATE TABLE IF NOT EXISTS parts (
     shard       TEXT PRIMARY KEY,
     logs        INTEGER NOT NULL,
     uploaded_at TEXT
+);
+CREATE TABLE IF NOT EXISTS removed (
+    id         TEXT PRIMARY KEY,
+    removed_at TEXT NOT NULL
 );
 """
 
@@ -277,6 +289,23 @@ def uploader_of(description: str | None) -> str:
     return "other"
 
 
+def add_gist(con: sqlite3.Connection, gist: dict, entry: dict) -> int:
+    """Index one gist unless it is already known or on the removed list. Returns 1 if added."""
+    return con.execute(
+        "INSERT OR IGNORE INTO gists (id, created_at, week, size, raw_url, uploader)"
+        " SELECT ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM removed WHERE id = ?)",
+        (
+            gist["id"],
+            gist["created_at"],
+            week_of(gist["created_at"]),
+            entry["size"],
+            entry["raw_url"],
+            uploader_of(gist.get("description")),
+            gist["id"],
+        ),
+    ).rowcount
+
+
 def cmd_index(args) -> int:
     con = open_db(args.data)
     token = github_token()
@@ -306,18 +335,7 @@ def cmd_index(args) -> int:
                         entry = log_file(gist)
                         if gist["created_at"] < since or entry is None:
                             continue
-                        inserted = con.execute(
-                            "INSERT OR IGNORE INTO gists (id, created_at, week, size, raw_url, uploader)"
-                            " VALUES (?, ?, ?, ?, ?, ?)",
-                            (
-                                gist["id"],
-                                gist["created_at"],
-                                week_of(gist["created_at"]),
-                                entry["size"],
-                                entry["raw_url"],
-                                uploader_of(gist.get("description")),
-                            ),
-                        ).rowcount
+                        inserted = add_gist(con, gist, entry)
                         new, known, page_new = new + inserted, known + (1 - inserted), page_new + inserted
                     reached_since = not gists or gists[-1]["created_at"] < since
                     finished = reached_since or (args.new and page_new == 0)
@@ -591,6 +609,11 @@ def parse_log(text: str) -> dict:
 
 
 PATCH_TABLES = ("HugslibLogs", "ActivePatches", "HarmonyPatches", "HarmonyPatchNamespaces")
+# Sorted ids delta-encode to a fraction of a byte a row; a dictionary would undo that.
+ACTIVE_PATCHES_ENCODING = {
+    "use_dictionary": False,
+    "column_encoding": {"HugslibLogId": "DELTA_BINARY_PACKED", "HarmonyPatchId": "DELTA_BINARY_PACKED"},
+}
 PATCH_SECTION = re.compile(r"(?:^| )(PRE|post|TRANS): ")
 PATCH_PRIORITY = re.compile(r"^\[(-?\d+)\]")
 PATCH_KINDS = {"PRE": "prefix", "post": "postfix", "TRANS": "transpiler"}
@@ -689,10 +712,7 @@ def cmd_pack(args) -> int:
         ),
         "HarmonyPatchNamespaces": pa.schema([("HarmonyPatchNamespaceId", pa.int32()), ("Namespace", pa.string())]),
     }
-    delta = {
-        "use_dictionary": False,
-        "column_encoding": {"HugslibLogId": "DELTA_BINARY_PACKED", "HarmonyPatchId": "DELTA_BINARY_PACKED"},
-    }
+    delta = ACTIVE_PATCHES_ENCODING
     con = open_db(args.data)
     con.execute("CREATE TEMP TABLE IF NOT EXISTS wanted (key INTEGER PRIMARY KEY)")
     staging, shards, patches = args.data / "staging", args.data / "shards", args.data / "patches"
@@ -1160,6 +1180,134 @@ def cmd_run(args) -> int:
     return 0
 
 
+# -------------------------------------------------------------------- remove
+
+GIST_LINK = re.compile(r"gist\.github(?:usercontent)?\.com/(?:[^/\s]+/)?([0-9a-f]{20,40})(?:[/?#.]|$)")
+GIST_ID = re.compile(r"[0-9a-f]{20,40}")
+
+
+def gist_id_of(text: str) -> str | None:
+    """The gist id in a gist link, a raw log link, or a bare id."""
+    text = text.strip()
+    link = GIST_LINK.search(text)
+    if link:
+        return link[1]
+    return text if GIST_ID.fullmatch(text) else None
+
+
+def rewrite_without(pq, source: Path, dest: Path, column: str, value, **options) -> tuple[int, int]:
+    """Copy a Parquet file, leaving out rows where column equals value. Returns rows kept and dropped."""
+    import pyarrow.compute as pc
+
+    file = pq.ParquetFile(source)
+    kept = dropped = 0
+    with pq.ParquetWriter(dest, file.schema_arrow, compression="zstd", **options) as writer:
+        for group in range(file.num_row_groups):
+            table = file.read_row_group(group)
+            rest = table.filter(pc.not_equal(table[column], value))
+            dropped += table.num_rows - rest.num_rows
+            kept += rest.num_rows
+            if rest.num_rows:
+                writer.write_table(rest)
+    return kept, dropped
+
+
+def remove_from_part(pq, con, args, client, bucket, gist_id: str, shard: str, log_no: int) -> int:
+    """Rewrite the three files of a part that hold a log's rows. Returns rows dropped."""
+    uploaded = con.execute("SELECT uploaded_at FROM parts WHERE shard = ?", (shard,)).fetchone()
+    in_bucket = bool(uploaded and uploaded[0])
+    local = part_files(args.data, shard)
+    targets = {
+        f"logs/{shard}": ("id", gist_id, {}),
+        f"patches/HugslibLogs/{shard}": ("HugslibLogId", log_no, {}),
+        f"patches/ActivePatches/{shard}": ("HugslibLogId", log_no, ACTIVE_PATCHES_ENCODING),
+    }
+    work = args.data / "removal"
+    work.mkdir(parents=True, exist_ok=True)
+    total = 0
+    for key, (column, value, options) in targets.items():
+        source = work / key.replace("/", "_") if in_bucket else local[key]
+        rewritten = source.with_name(source.name + ".new")
+        if in_bucket:
+            client.download_file(bucket, key, str(source))
+        kept, dropped = rewrite_without(pq, source, rewritten, column, value, compression_level=args.level, **options)
+        say(f"  {key}: {dropped} rows dropped, {kept} kept")
+        total += dropped
+        if args.dry_run:
+            rewritten.unlink()
+        elif in_bucket:
+            client.upload_file(str(rewritten), bucket, key)
+            stored = client.head_object(Bucket=bucket, Key=key)["ContentLength"]
+            if stored != rewritten.stat().st_size:
+                raise UploadError(f"{key}: the bucket holds {stored} bytes, the rewritten file has {rewritten.stat().st_size}")
+            rewritten.unlink()
+        else:
+            os.replace(rewritten, source)
+        if in_bucket:
+            source.unlink()
+    with contextlib.suppress(OSError):
+        work.rmdir()
+    return total
+
+
+def cmd_remove(args) -> int:
+    ids = [gist_id_of(item) for item in args.gists]
+    if None in ids:
+        say("not a gist link or id: " + args.gists[ids.index(None)])
+        return 1
+    con = open_db(args.data)
+    env = client = pq = None
+    removed = touched_bucket = 0
+    queue = list(dict.fromkeys(ids))
+    while queue:
+        gist_id = queue.pop(0)
+        row = con.execute("SELECT state, week, shard, log_no, sha256 FROM gists WHERE id = ?", (gist_id,)).fetchone()
+        state, week, shard, log_no, sha256 = row or (None, None, None, None, None)
+        if sha256:
+            twins = [
+                twin
+                for (twin,) in con.execute(
+                    "SELECT id FROM gists WHERE sha256 = ? AND id != ? AND state != 'removed'", (sha256, gist_id)
+                )
+                if twin not in queue
+            ]
+            if twins and args.same_content:
+                queue += twins
+            elif twins:
+                say(f"  {len(twins)} other uploads hold the same content; --same-content removes them as well")
+        say(f"{gist_id}: {state or 'not in the index'}")
+        if state == "packed":
+            if pq is None:
+                try:
+                    import pyarrow.parquet as pq
+                except ImportError:
+                    say("removing a packed log needs pyarrow: run it as `uv run corpus.py remove ...`")
+                    return 1
+            in_bucket = con.execute("SELECT uploaded_at FROM parts WHERE shard = ?", (shard,)).fetchone()
+            if in_bucket and in_bucket[0] and client is None:
+                env = load_env()
+                client = r2_client(env)
+            remove_from_part(pq, con, args, client, env and env["R2_BUCKET"], gist_id, shard, log_no)
+            touched_bucket += bool(client)
+            if not args.dry_run and not args.no_supabase:
+                supabase_request(env or load_env(), "DELETE", f"/rest/v1/logs?id=eq.{gist_id}")
+        elif state == "fetched" and not args.dry_run:
+            (args.data / "staging" / week / f"{gist_id}.txt.gz").unlink(missing_ok=True)
+        if args.dry_run:
+            continue
+        con.execute("INSERT OR REPLACE INTO removed (id, removed_at) VALUES (?, ?)", (gist_id, now_iso()))
+        con.execute("UPDATE gists SET state = 'removed', synced = 0, error = NULL WHERE id = ?", (gist_id,))
+        con.execute("DELETE FROM facts WHERE id = ?", (gist_id,))
+        if state == "packed":
+            con.execute("UPDATE parts SET logs = logs - 1 WHERE shard = ?", (shard,))
+        con.commit()
+        removed += 1
+    if touched_bucket and not args.dry_run:
+        backup_state(con, args.data, client, env["R2_BUCKET"])
+    print(f"RESULT remove {'dry run' if args.dry_run else 'ok'} asked={len(ids)} removed={removed}")
+    return 0
+
+
 # -------------------------------------------------------------------- status
 
 
@@ -1244,6 +1392,14 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--no-supabase", action="store_true", help="skip the Supabase sync; `sync` can catch up later")
     run.add_argument("--backup-every", type=int, default=8, help="copy the index to the bucket every N weeks")
     run.set_defaults(run=cmd_run)
+
+    remove = commands.add_parser("remove", help="take logs out of the archive, by gist link or id")
+    remove.add_argument("gists", nargs="+", metavar="LINK", help="a gist link, a raw log link, or a gist id")
+    remove.add_argument("--dry-run", action="store_true", help="report what would be dropped and change nothing")
+    remove.add_argument("--same-content", action="store_true", help="also remove other uploads of the same log")
+    remove.add_argument("--no-supabase", action="store_true", help="leave the Supabase row alone")
+    remove.add_argument("--level", type=int, default=9, help="zstd level for the rewritten files")
+    remove.set_defaults(run=cmd_remove)
 
     status = commands.add_parser("status", help="counts by state and disk use")
     status.set_defaults(run=cmd_status)
