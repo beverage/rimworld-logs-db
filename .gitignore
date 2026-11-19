@@ -1,0 +1,15 @@
+# Local DuckDB database files and their write-ahead logs
+*.duckdb
+*.duckdb.wal
+
+# Data pulled down for local work
+*.parquet
+*.csv
+*.sqlite
+
+# Keys never belong in the repo
+env
+.env
+*.env
+
+.DS_Store
