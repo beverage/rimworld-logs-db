@@ -26,12 +26,12 @@ def say(message: str) -> None:
 
 
 def now_iso() -> str:
-    return dt.datetime.now(dt.timezone.utc).strftime(TIMESTAMP)
+    return dt.datetime.now(dt.UTC).strftime(TIMESTAMP)
 
 
 def parse_time(iso: str) -> dt.datetime:
     """A GitHub timestamp as an aware UTC datetime."""
-    return dt.datetime.strptime(iso, TIMESTAMP).replace(tzinfo=dt.timezone.utc)
+    return dt.datetime.strptime(iso, TIMESTAMP).replace(tzinfo=dt.UTC)
 
 
 def week_of(iso: str) -> str:

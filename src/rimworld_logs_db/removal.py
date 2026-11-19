@@ -23,8 +23,11 @@ import re
 import sqlite3
 from pathlib import Path
 
+import pyarrow.compute as pc
+import pyarrow.parquet as pq
+
 from . import bucket, supabase
-from .common import ConfigError, now_iso, say
+from .common import now_iso, say
 from .index_db import open_db
 from .layout import LOGS, bucket_key, part_paths, staged_path
 from .packing import ACTIVE_PATCHES_ENCODING
@@ -43,10 +46,8 @@ def gist_id_of(text: str) -> str | None:
     return text if GIST_ID.fullmatch(text) else None
 
 
-def rewrite_without(pq, source: Path, dest: Path, column: str, value, **options) -> tuple[int, int]:
+def rewrite_without(source: Path, dest: Path, column: str, value, **options) -> tuple[int, int]:
     """Copy a Parquet file, leaving out rows where column equals value. Returns rows kept and dropped."""
-    import pyarrow.compute as pc
-
     file = pq.ParquetFile(source)
     kept = dropped = 0
     with pq.ParquetWriter(dest, file.schema_arrow, compression="zstd", **options) as writer:
@@ -68,10 +69,10 @@ class Removal:
         self.dry_run, self.no_supabase, self.level = dry_run, no_supabase, level
         self.env: dict[str, str] | None = None
         self.client = None
-        self.pq = None
         self.removed = 0
 
     def settings(self) -> dict[str, str]:
+        """The env file, read the first time something needs a key."""
         if self.env is None:
             self.env = load_env()
         return self.env
@@ -87,6 +88,7 @@ class Removal:
         return [twin for (twin,) in same if twin not in queued]
 
     def remove(self, gist_id: str) -> None:
+        """Take one log out of wherever it has got to: staging, a packed part, or nowhere yet."""
         row = self.con.execute(
             "SELECT state, week, shard, log_no, sha256 FROM gists WHERE id = ?", (gist_id,)
         ).fetchone()
@@ -103,14 +105,6 @@ class Removal:
 
     def rewrite_part(self, gist_id: str, shard: str, log_no: int) -> None:
         """Rewrite the three files of a part that hold the log's rows, in the bucket or on disk."""
-        if self.pq is None:
-            try:
-                import pyarrow.parquet as pq
-            except ImportError as exc:
-                raise ConfigError(
-                    "removing a packed log needs pyarrow: run it as `uv run corpus.py remove ...`"
-                ) from exc
-            self.pq = pq
         uploaded = self.con.execute("SELECT uploaded_at FROM parts WHERE shard = ?", (shard,)).fetchone()
         in_bucket = bool(uploaded and uploaded[0])
         if in_bucket and self.client is None:
@@ -129,9 +123,7 @@ class Removal:
             rewritten = source.with_name(source.name + ".new")
             if in_bucket:
                 self.client.download_file(self.settings()["R2_BUCKET"], key, str(source))
-            kept, dropped = rewrite_without(
-                self.pq, source, rewritten, column, value, compression_level=self.level, **options
-            )
+            kept, dropped = rewrite_without(source, rewritten, column, value, compression_level=self.level, **options)
             say(f"  {key}: {dropped} rows dropped, {kept} kept")
             if self.dry_run:
                 rewritten.unlink()

@@ -1,13 +1,13 @@
 # How it fits together
 
-Logs start as public gists on GitHub. One script copies them into two stores, and everyone who uses the archive reads from those stores with DuckDB. Nothing runs as a service.
+Logs start as public gists on GitHub. One command-line tool copies them into two stores, and everyone who uses the archive reads from those stores with DuckDB. Nothing runs as a service.
 
 ```mermaid
 flowchart TB
     players["Players press share in HugsLib or Log Publisher"]
     gists[("GitHub: public gists under HugsLibRecordKeeper")]
 
-    subgraph puller["The maintainer's machine: puller/corpus.py"]
+    subgraph puller["The maintainer's machine: the rimworld-logs-db command"]
         index["index: list the gists"]
         state[("index.sqlite: progress, patch numbers, removed list")]
         fetch["fetch: download each log once"]
@@ -56,7 +56,7 @@ flowchart TB
 
 **GitHub** is the source. HugsLib and the standalone Log Publisher upload every shared log as a gist under one account, and the puller only ever reads from it.
 
-**The puller** is a small Python package, started through [puller/corpus.py](../puller/corpus.py) and run by the maintainer. It works a week at a time: download that week's logs, pack them into Parquet, upload, delete the local copy. Its working state is a single SQLite file. [puller/README.md](../puller/README.md) maps each step to its module.
+**The puller** is the Python package in [src/rimworld_logs_db](../src/rimworld_logs_db), which the maintainer runs as the `rimworld-logs-db` command. It works a week at a time: download that week's logs, pack them into Parquet, upload, delete the local copy. Its working state is a single SQLite file. [maintaining.md](maintaining.md) maps each step to its module.
 
 **The R2 bucket** holds the data: one log file and four patch-table files per upload week, plus a backup of the puller's SQLite file. It is private, and Cloudflare does not charge for reads.
 

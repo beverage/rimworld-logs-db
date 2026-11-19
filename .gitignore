@@ -12,5 +12,11 @@ env
 .env
 *.env
 
+# Python working files
 __pycache__/
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+
 .DS_Store

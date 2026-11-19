@@ -31,6 +31,9 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.parquet as pq
+
 from .common import now_iso, parse_time, say, week_of
 from .index_db import open_db
 from .layout import LOGS, PATCH_TABLES, part_paths, staged_path
@@ -46,44 +49,44 @@ ACTIVE_PATCHES_ENCODING = {
 BATCH_LOGS = 64
 BATCH_BYTES = 64 << 20
 
+TIMESTAMP = pa.timestamp("s", tz="UTC")
+SCHEMAS = {
+    LOGS: pa.schema(
+        [
+            ("hugslib_log_id", pa.int32()),
+            ("id", pa.string()),
+            ("created_at", TIMESTAMP),
+            ("size", pa.int64()),
+            ("uploader", pa.string()),
+            ("sha256", pa.string()),
+            ("utf8_ok", pa.bool_()),
+            ("game_version", pa.string()),
+            ("game_rev", pa.int32()),
+            ("mod_count", pa.int32()),
+            ("dlcs", pa.list_(pa.string())),
+            ("mods", pa.list_(pa.string())),
+            ("trimmed", pa.bool_()),
+            ("line_count", pa.int32()),
+            ("text", pa.large_string()),
+        ]
+    ),
+    "HugslibLogs": pa.schema([("HugslibLogId", pa.int32()), ("GUID", pa.string()), ("UploadTime", TIMESTAMP)]),
+    "ActivePatches": pa.schema([("HugslibLogId", pa.int32()), ("HarmonyPatchId", pa.int32())]),
+    "HarmonyPatches": pa.schema(
+        [
+            ("HarmonyPatchId", pa.int32()),
+            ("Target", pa.string()),
+            ("Kind", pa.string()),
+            ("Priority", pa.int32()),
+            ("Method", pa.string()),
+            ("HarmonyPatchNamespaceId", pa.int32()),
+        ]
+    ),
+    "HarmonyPatchNamespaces": pa.schema([("HarmonyPatchNamespaceId", pa.int32()), ("Namespace", pa.string())]),
+}
 
-def table_schemas(pa) -> dict:
-    """The Arrow schema of each of the five tables."""
-    timestamp = pa.timestamp("s", tz="UTC")
-    return {
-        LOGS: pa.schema(
-            [
-                ("hugslib_log_id", pa.int32()),
-                ("id", pa.string()),
-                ("created_at", timestamp),
-                ("size", pa.int64()),
-                ("uploader", pa.string()),
-                ("sha256", pa.string()),
-                ("utf8_ok", pa.bool_()),
-                ("game_version", pa.string()),
-                ("game_rev", pa.int32()),
-                ("mod_count", pa.int32()),
-                ("dlcs", pa.list_(pa.string())),
-                ("mods", pa.list_(pa.string())),
-                ("trimmed", pa.bool_()),
-                ("line_count", pa.int32()),
-                ("text", pa.large_string()),
-            ]
-        ),
-        "HugslibLogs": pa.schema([("HugslibLogId", pa.int32()), ("GUID", pa.string()), ("UploadTime", timestamp)]),
-        "ActivePatches": pa.schema([("HugslibLogId", pa.int32()), ("HarmonyPatchId", pa.int32())]),
-        "HarmonyPatches": pa.schema(
-            [
-                ("HarmonyPatchId", pa.int32()),
-                ("Target", pa.string()),
-                ("Kind", pa.string()),
-                ("Priority", pa.int32()),
-                ("Method", pa.string()),
-                ("HarmonyPatchNamespaceId", pa.int32()),
-            ]
-        ),
-        "HarmonyPatchNamespaces": pa.schema([("HarmonyPatchNamespaceId", pa.int32()), ("Namespace", pa.string())]),
-    }
+# One log on its way into a batch: its row for the logs table, and its parsed patches.
+PendingLog = tuple[dict, list[Patch]]
 
 
 class PatchDictionary:
@@ -101,6 +104,20 @@ class PatchDictionary:
         self.next_id = (con.execute("SELECT MAX(id) FROM patch_ids").fetchone()[0] or 0) + 1
         self.new_patches = 0
         self.collisions = 0
+
+    def keyed(self, logs: list[PendingLog]) -> tuple[dict[int, Patch], list[tuple[int, list[int]]]]:
+        """Hash a batch's patches. Returns every distinct patch by key, and each log's keys."""
+        patches, per_log = {}, []
+        for row, entries in logs:
+            keys = []
+            for entry in entries:
+                key = patch_key(entry)
+                # Two different patches sharing a 64-bit key would be merged; count it if it ever happens.
+                if patches.setdefault(key, entry) != entry:
+                    self.collisions += 1
+                keys.append(key)
+            per_log.append((row["hugslib_log_id"], keys))
+        return patches, per_log
 
     def known(self, keys) -> dict[int, int]:
         """The ids already given to these patch keys."""
@@ -150,27 +167,12 @@ class PatchDictionary:
         self.new_patches += len(fresh)
         return ids, patch_rows, namespace_rows
 
-    def keyed(self, logs: list[tuple[dict, list[Patch]]]) -> tuple[dict[int, Patch], list[tuple[int, list[int]]]]:
-        """Hash a batch's patches. Returns every distinct patch by key, and each log's keys."""
-        patches, per_log = {}, []
-        for row, entries in logs:
-            keys = []
-            for entry in entries:
-                key = patch_key(entry)
-                # Two different patches sharing a 64-bit key would be merged; count it if it ever happens.
-                if patches.setdefault(key, entry) != entry:
-                    self.collisions += 1
-                keys.append(key)
-            per_log.append((row["hugslib_log_id"], keys))
-        return patches, per_log
-
 
 class PartWriter:
     """The five files of one part, written under temporary names and published together."""
 
-    def __init__(self, pa, pq, outputs: dict[str, Path], level: int) -> None:
-        self.pa, self.pq, self.outputs = pa, pq, outputs
-        self.schemas = table_schemas(pa)
+    def __init__(self, outputs: dict[str, Path], level: int) -> None:
+        self.outputs = outputs
         self.temps = {name: path.with_name(path.name + ".tmp") for name, path in outputs.items()}
         self.patch_rows = 0
         self.stack = contextlib.ExitStack()
@@ -180,16 +182,15 @@ class PartWriter:
             options = ACTIVE_PATCHES_ENCODING if name == "ActivePatches" else {}
             self.writers[name] = self.stack.enter_context(
                 pq.ParquetWriter(
-                    self.temps[name], self.schemas[name], compression="zstd", compression_level=level, **options
+                    self.temps[name], SCHEMAS[name], compression="zstd", compression_level=level, **options
                 )
             )
 
     def write_rows(self, name: str, rows: list[dict]) -> None:
-        self.writers[name].write_table(self.pa.Table.from_pylist(rows, schema=self.schemas[name]))
+        self.writers[name].write_table(pa.Table.from_pylist(rows, schema=SCHEMAS[name]))
 
-    def write_batch(self, logs: list[tuple[dict, list[Patch]]], dictionary: PatchDictionary) -> None:
-        """Write one batch of logs, each with its parsed patches, as a row group in every table."""
-        pa = self.pa
+    def write_batch(self, logs: list[PendingLog], dictionary: PatchDictionary) -> None:
+        """Write one batch of logs as a row group in every table."""
         self.write_rows(LOGS, [row for row, _ in logs])
         self.write_rows(
             "HugslibLogs",
@@ -216,7 +217,7 @@ class PartWriter:
                     "HugslibLogId": pa.array(log_column, pa.int32()),
                     "HarmonyPatchId": pa.array(patch_column, pa.int32()),
                 },
-                schema=self.schemas["ActivePatches"],
+                schema=SCHEMAS["ActivePatches"],
             )
         )
         self.patch_rows += len(patch_column)
@@ -225,7 +226,7 @@ class PartWriter:
         self.stack.close()
 
     def rows_written(self, name: str) -> int:
-        return self.pq.ParquetFile(self.temps[name]).metadata.num_rows
+        return pq.ParquetFile(self.temps[name]).metadata.num_rows
 
     def publish(self) -> None:
         for name, temp in self.temps.items():
@@ -252,8 +253,8 @@ class Packed:
 class Packer:
     """Packs weeks one after another, carrying the log counter and the patch dictionary between them."""
 
-    def __init__(self, pa, pq, con: sqlite3.Connection, data: Path, level: int, keep_staging: bool) -> None:
-        self.pa, self.pq, self.con, self.data = pa, pq, con, data
+    def __init__(self, con: sqlite3.Connection, data: Path, level: int, keep_staging: bool) -> None:
+        self.con, self.data = con, data
         self.level, self.keep_staging = level, keep_staging
         self.dictionary = PatchDictionary(con)
         self.next_log = (con.execute("SELECT MAX(log_no) FROM gists").fetchone()[0] or 0) + 1
@@ -270,7 +271,7 @@ class Packer:
         ).fetchone()[0]
         shard = f"week={week}/part-{part:03d}.parquet"
         outputs = part_paths(self.data, shard)
-        writer = PartWriter(self.pa, self.pq, outputs, self.level)
+        writer = PartWriter(outputs, self.level)
 
         batch, batch_bytes, done, facts = [], 0, [], []
         with contextlib.closing(writer):
@@ -373,15 +374,8 @@ def pack(
     is not the week in progress. `partial` and `include_open` lift those two
     conditions. `level` is the zstd level.
     """
-    try:
-        import pyarrow as pa
-        import pyarrow.parquet as pq
-    except ImportError:
-        say("pack needs pyarrow: run it as `uv run corpus.py pack`")
-        return 1
-
     con = open_db(data)
-    packer = Packer(pa, pq, con, data, level, keep_staging)
+    packer = Packer(con, data, level, keep_staging)
     open_week = week_of(now_iso())
     weeks = [w for (w,) in con.execute("SELECT DISTINCT week FROM gists WHERE state = 'fetched' ORDER BY week")]
     total, packed_weeks, skipped = Packed(), 0, 0

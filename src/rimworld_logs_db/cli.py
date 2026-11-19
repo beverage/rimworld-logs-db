@@ -27,7 +27,7 @@ def iso_date(text: str) -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="corpus.py", description="Builds the RimWorld Logs DB archive.")
+    parser = argparse.ArgumentParser(prog="rimworld-logs-db", description="Builds the RimWorld Logs DB archive.")
     parser.add_argument(
         "--data",
         type=Path,

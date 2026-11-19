@@ -129,6 +129,6 @@ This removes the copy held here. The original gist stays on GitHub under `HugsLi
 
 ## Where the data comes from
 
-A script lists the gists through GitHub's API, downloads each log once, and packs a week at a time into Parquet. It records a SHA-256 of every log as downloaded, in the `sha256` column, so two uploads of the same log can be recognised. Nothing in a log is edited.
+A Python package in this repo lists the gists through GitHub's API, downloads each log once, and packs a week at a time into Parquet. It records a SHA-256 of every log as downloaded, in the `sha256` column, so two uploads of the same log can be recognised. Nothing in a log is edited.
 
-The script, its tests and its checks are in [puller/](puller/README.md). [docs/architecture.md](docs/architecture.md) has a diagram of how the pieces connect and why they are split this way.
+The package is in [src/rimworld_logs_db](src/rimworld_logs_db), and [docs/maintaining.md](docs/maintaining.md) covers running it, its tests and its checks. [docs/architecture.md](docs/architecture.md) has a diagram of how the pieces connect and why they are split this way.

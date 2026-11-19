@@ -48,7 +48,9 @@ def request(env: dict[str, str], method: str, path: str, body=None, prefer: str 
     except urllib.error.HTTPError as exc:
         detail = exc.read()[:300].decode("utf-8", "replace")
         if exc.code == 404 and "PGRST205" in detail:
-            raise ConfigError("a Supabase table is missing: apply schema.sql in the project's SQL editor") from exc
+            raise ConfigError(
+                "a Supabase table is missing: apply sql/supabase-schema.sql in the project's SQL editor"
+            ) from exc
         raise UploadError(f"Supabase answered HTTP {exc.code}: {detail}") from exc
 
 

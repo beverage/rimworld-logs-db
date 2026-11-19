@@ -15,7 +15,10 @@ import contextlib
 import sqlite3
 from pathlib import Path
 
-from .common import ConfigError, UploadError, now_iso, say
+import boto3
+from botocore.config import Config
+
+from .common import UploadError, now_iso, say
 from .index_db import open_db
 from .layout import STATE_KEY, part_files
 from .settings import R2_KEYS, load_env, require
@@ -23,11 +26,6 @@ from .settings import R2_KEYS, load_env, require
 
 def r2_client(env: dict[str, str]):
     """An S3 client for the R2 bucket named in the env file."""
-    try:
-        import boto3
-        from botocore.config import Config
-    except ImportError as exc:
-        raise ConfigError("uploads need boto3: run it as `uv run corpus.py ...`") from exc
     require(env, R2_KEYS)
     return boto3.client(
         "s3",

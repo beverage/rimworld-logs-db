@@ -202,7 +202,7 @@ def index(
                     break
                 paths = [f"/users/{ACCOUNT}/gists?per_page=100&page={p}" for p in batch]
                 results = list(pool.map(lambda path: api_get(path, token), paths))
-                for number, (gists, _) in zip(batch, results):
+                for number, (gists, _) in zip(batch, results, strict=True):
                     new, known = add_page(con, gists, cutoff)
                     walk.pages, walk.last_page = walk.pages + 1, number
                     walk.new, walk.known = walk.new + new, walk.known + known

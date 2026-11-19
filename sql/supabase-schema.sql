@@ -1,6 +1,9 @@
--- Index and per-log facts for the HugsLib log corpus, for a Supabase project.
--- One row per public gist. The log text and the full mod list live in the
--- weekly Parquet files; this table is what fits a 500 MB database.
+-- The two Supabase tables of RimWorld Logs DB. Apply this file once, in the
+-- project's SQL editor.
+--
+-- logs: one row per packed log, with its id, upload time and parsed facts.
+-- The log text and the full mod list live in the weekly Parquet files; this
+-- table is what fits a 500 MB database.
 
 create table if not exists public.logs (
   id            text primary key,       -- gist id (GUID in the patch tables)
@@ -28,8 +31,8 @@ create index if not exists logs_game_version on public.logs (game_version);
 -- table to anyone who signs up while sign-ups are enabled.
 alter table public.logs enable row level security;
 
--- Logs taken out of the archive. This is the list's home: the puller copies
--- it into its local index before listing anything, so an index rebuilt from
+-- removed_logs: logs taken out of the archive. This is the list's home: it is
+-- copied into the local index before anything is listed, so an index rebuilt from
 -- nothing, or one on another machine, still refuses these logs. The hash
 -- catches the same log uploaded again under a new id.
 create table if not exists public.removed_logs (

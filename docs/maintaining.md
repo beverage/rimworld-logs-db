@@ -1,19 +1,37 @@
-# The puller
+# Maintaining the archive
 
-`corpus.py` builds the archive. It lists the public gists under `HugsLibRecordKeeper`, downloads each log once, packs a week of logs into Parquet, uploads the files to an R2 bucket, and records one row per log in a Supabase table.
+The `rimworld-logs-db` command builds the archive. It lists the public gists under `HugsLibRecordKeeper`, downloads each log once, packs a week of logs into Parquet, uploads the files to an R2 bucket, and records one row per log in a Supabase table.
 
-You only need this folder to maintain the archive. To query it, the [main README](../README.md) is enough.
+You only need this page to maintain the archive or to work on the code. To query it, the [main README](../README.md) is enough.
 
-## What it needs
+## Setting up
 
-- Python 3.11 or newer, and [uv](https://docs.astral.sh/uv/). The packing, upload and removal steps use `pyarrow` and `boto3`, which `uv run` installs from the header of `corpus.py`.
+The code is a Python package managed with [uv](https://docs.astral.sh/uv/). From a clone of this repo:
+
+```
+uv sync
+```
+
+That creates `.venv` with the package, its two dependencies (`pyarrow` and `boto3`) and the tools for testing and linting, at the versions pinned in `uv.lock`. It needs Python 3.11 or newer, which uv downloads if the machine has none. Every command on this page goes through `uv run`, which uses that environment.
+
+Building the archive also needs three things outside the repo:
+
 - A GitHub token for listing gists. It is read from `GITHUB_TOKEN` or `GH_TOKEN`, or from the `gh` CLI if you are signed in.
 - An R2 bucket and an API token with "Object Read & Write" on it.
-- A Supabase project with [schema.sql](schema.sql) applied, and its secret key.
+- A Supabase project with [sql/supabase-schema.sql](../sql/supabase-schema.sql) applied, and its secret key.
 
-## How the code is laid out
+## How the repo is laid out
 
-`corpus.py` is only the entry point. The work is in the `logsdb` package beside it, one module per step of the pipeline:
+| Path | Holds |
+|---|---|
+| `src/rimworld_logs_db/` | the package |
+| `tests/` | the test suite, which needs no network and no keys |
+| `scripts/` | four checks that run against the real bucket or real packed files |
+| `sql/` | `views.sql` for readers, `supabase-schema.sql` for the Supabase project |
+| `docs/` | this page, the table and query references, and the architecture diagram |
+| `pyproject.toml`, `uv.lock` | the package's metadata, dependencies and tool settings |
+
+The package has one module per step of the pipeline:
 
 | Module | What it does |
 |---|---|
@@ -28,7 +46,7 @@ You only need this folder to maintain the archive. To query it, the [main README
 
 Five smaller modules support those: `index_db.py` (the local SQLite index), `layout.py` (where files live on disk and in the bucket), `settings.py` (names, defaults and the env file), `common.py` (messages, timestamps and errors) and `cli.py` (the command line).
 
-Each module opens with a note on why its step works the way it does, so that is the place to start reading. `parsing.py` has no dependencies and is the part most likely to be useful on its own.
+Each module opens with a note on why its step works the way it does, so that is the place to start reading. `parsing.py` imports nothing outside the standard library and is the part most likely to be useful on its own.
 
 ## The env file
 
@@ -45,20 +63,22 @@ SUPABASE_SECRET_KEY=
 
 A bucket created in R2's EU jurisdiction is served only from the `.eu.` host. Through the default host, `https://<account id>.r2.cloudflarestorage.com`, every call to it returns "access denied".
 
-`uv run puller/checks/credentials.py` confirms the keys work without printing them.
+`uv run python scripts/check_credentials.py` confirms the keys work without printing them.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `corpus.py index --since 2024-11-18` | Lists uploads back to a date into the local index. |
-| `corpus.py index --new` | Lists only uploads newer than the index already holds. |
-| `uv run corpus.py run` | For each week, newest first: download, pack, upload, sync. |
-| `uv run corpus.py run --weeks 4` | The same, stopping after four weeks. |
-| `uv run corpus.py remove <gist link>` | Takes one log out of the archive. See below. |
-| `corpus.py status` | Counts by state, and what is waiting to upload or sync. |
+| `uv run rimworld-logs-db index --since 2024-11-18` | Lists uploads back to a date into the local index. |
+| `uv run rimworld-logs-db index --new` | Lists only uploads newer than the index already holds. |
+| `uv run rimworld-logs-db run` | For each week, newest first: download, pack, upload, sync. |
+| `uv run rimworld-logs-db run --weeks 4` | The same, stopping after four weeks. |
+| `uv run rimworld-logs-db remove <gist link>` | Takes one log out of the archive. See below. |
+| `uv run rimworld-logs-db status` | Counts by state, and what is waiting to upload or sync. |
 
 `run` chains four steps that also exist as commands of their own, for redoing one by hand: `fetch`, `pack`, `push` and `sync`. Every command resumes where an earlier one stopped. The week still in progress is skipped, because uploads are still arriving for it.
+
+`uv run rimworld-logs-db <command> --help` lists a command's options. `uv run python -m rimworld_logs_db` is the same program.
 
 ## Pace
 
@@ -93,8 +113,8 @@ A week normally has one part. A second part appears when logs for that week are 
 When someone asks for their log to be taken out, pass its link or its gist id:
 
 ```
-uv run puller/corpus.py remove https://gist.github.com/HugsLibRecordKeeper/<gist id> --dry-run
-uv run puller/corpus.py remove https://gist.github.com/HugsLibRecordKeeper/<gist id>
+uv run rimworld-logs-db remove https://gist.github.com/HugsLibRecordKeeper/<gist id> --dry-run
+uv run rimworld-logs-db remove https://gist.github.com/HugsLibRecordKeeper/<gist id>
 ```
 
 The dry run downloads the week's files, reports how many rows would go, and changes nothing. The real run then does four things:
@@ -114,15 +134,38 @@ A dry run against a real week of 2,123 logs took 16 seconds and would have dropp
 
 Run `remove` between runs. If a `run` is working on the same week at that moment, its files are still on disk and the two would be writing the same part.
 
-## Tests and checks
+## Tests
+
+```
+uv run pytest
+```
+
+The suite is 88 tests and takes about 12 seconds. Three download tests wait out real pauses of two to four seconds each, which is most of that time.
+
+No test touches GitHub, R2 or Supabase. A local HTTP server stands in for GitHub's raw file host, another for Supabase's REST interface, and a folder for the bucket. Those fixtures are in `tests/conftest.py`, along with `archive`, which packs six made-up logs into a part for the packing and removal tests to work on.
+
+| File | Covers |
+|---|---|
+| `test_parsing.py` | the mod list, game version and Harmony patch parsers |
+| `test_listing.py` | turning a page of the gist list into index rows |
+| `test_download.py` | one download: success, a short body, refusals, retries, the removed list |
+| `test_packing.py` | the five Parquet files of a part, and the patch numbering |
+| `test_supabase.py` | upserting log rows, and merging the removed list both ways |
+| `test_removal.py` | removing a log on disk, in the bucket and before it was ever listed |
+| `test_settings.py` | the env file, and where files live |
+| `test_cli.py` | arguments, exit codes and `RESULT` lines |
+
+`uv run ruff check` lints the code and `uv run ruff format` formats it. The settings for both, and for pytest, are in `pyproject.toml`.
+
+## Checks against the real archive
+
+The scripts in `scripts/` read real data, so they are run by hand and are not part of the test suite. They print counts and outcomes only: no key, no log id and no log text.
 
 | Script | Needs | What it proves |
 |---|---|---|
-| `python3 puller/tests/offline.py` | nothing | The parsers, the refusal handling and the Supabase requests, against a local test server. |
-| `uv run puller/tests/removal.py` | nothing | Removing a log on disk and after upload, with a folder standing in for the bucket. |
-| `uv run puller/checks/credentials.py` | the env file | The R2 token can list, write, read and delete; the Supabase table answers. |
-| `uv run puller/checks/packed.py` | packed files on disk | Every log's patch set rebuilds exactly from the four patch tables. |
-| `uv run puller/checks/bucket.py` | the env file and the index | The bucket holds every uploaded part, and its row counts match the index. |
-| `uv run puller/checks/docs.py` | the env file | Every SQL block in the docs runs against the bucket, from a fresh setup. |
+| `uv run python scripts/check_credentials.py` | the env file | The R2 token can list, write, read and delete; the Supabase table answers. |
+| `uv run python scripts/check_packed.py` | packed files on disk | Every log's patch set rebuilds exactly from the four patch tables. |
+| `uv run python scripts/check_bucket.py` | the env file and the index | The bucket holds every uploaded part, and its row counts match the index. |
+| `uv run python scripts/check_docs.py` | the env file | Every SQL block in the docs runs against the bucket, from a fresh setup. |
 
-`uvx ruff check puller` lints the code and `uvx ruff format puller` formats it, with the settings in `ruff.toml`.
+`check_packed.py` needs a week's files before they are uploaded: pack with `--keep-staging` and run it before `push`.

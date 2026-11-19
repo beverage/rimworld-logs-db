@@ -80,7 +80,7 @@ def parse_patches(text: str) -> list[Patch]:
         if not separator or target == "Harmony versions present":
             continue
         pieces = PATCH_SECTION.split(rest)
-        for label, names in zip(pieces[1::2], pieces[2::2]):
+        for label, names in zip(pieces[1::2], pieces[2::2], strict=True):
             for name in names.split(", "):
                 name = name.strip()
                 priority = PATCH_PRIORITY.match(name)
@@ -94,7 +94,7 @@ def parse_patches(text: str) -> list[Patch]:
 def patch_key(patch: Patch) -> int:
     """A patch's dictionary key: 64 bits of a hash over its four printed parts."""
     target, kind, priority, method = patch
-    digest = hashlib.blake2b(f"{target}\x1f{kind}\x1f{priority}\x1f{method}".encode("utf-8"), digest_size=8)
+    digest = hashlib.blake2b(f"{target}\x1f{kind}\x1f{priority}\x1f{method}".encode(), digest_size=8)
     return int.from_bytes(digest.digest(), "big", signed=True)
 
 
