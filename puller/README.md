@@ -32,7 +32,7 @@ Each module opens with a note on why its step works the way it does, so that is 
 
 ## The env file
 
-Keys are read from `~/.config/hugslib-corpus/env`, or from the path in `HUGSLIB_CORPUS_ENV`. One `KEY=value` per line, no quotes:
+Keys are read from `~/.config/rimworld-logs-db/env`, or from the path in `RIMWORLD_LOGS_DB_ENV`. One `KEY=value` per line, no quotes:
 
 ```
 R2_ENDPOINT=https://<account id>.eu.r2.cloudflarestorage.com
@@ -68,7 +68,7 @@ A bucket created in R2's EU jurisdiction is served only from the `.eu.` host. Th
 
 ## What stays on disk
 
-Everything local lives in one data folder, `~/Code/Apps/rimworld-log-corpus` unless `--data` or `HUGSLIB_CORPUS_DIR` says otherwise.
+Everything local lives in one data folder, `~/.local/share/rimworld-logs-db` unless `--data` or `RIMWORLD_LOGS_DB_DATA` says otherwise.
 
 - `index.sqlite` is the working state: every gist, how far it has got, and the dictionary that gives each Harmony patch its number. `run` copies it to `state/index.sqlite` in the bucket every eight weeks and when it finishes.
 - `staging/`, `shards/` and `patches/` hold one week while it is being processed. After the upload is checked against the file sizes, they are deleted.

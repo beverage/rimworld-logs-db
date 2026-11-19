@@ -148,7 +148,7 @@ env_file.write_text(
     f"SUPABASE_URL=http://127.0.0.1:{server.server_address[1]}\nSUPABASE_SECRET_KEY=test-key\n"
     "R2_ENDPOINT=unused\nR2_BUCKET=stand-in\nR2_ACCESS_KEY_ID=unused\nR2_SECRET_ACCESS_KEY=unused\n"
 )
-os.environ["HUGSLIB_CORPUS_ENV"] = str(env_file)
+os.environ["RIMWORLD_LOGS_DB_ENV"] = str(env_file)
 
 # ---- dry run
 

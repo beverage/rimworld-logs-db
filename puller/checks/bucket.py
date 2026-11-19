@@ -19,14 +19,14 @@ import boto3
 import duckdb
 from botocore.config import Config
 
-ENV_FILE = Path(sys.argv[1]) if len(sys.argv) > 1 else Path.home() / ".config" / "hugslib-corpus" / "env"
+ENV_FILE = Path(sys.argv[1]) if len(sys.argv) > 1 else Path.home() / ".config" / "rimworld-logs-db" / "env"
 env = {}
 for line in ENV_FILE.read_text().splitlines():
     line = line.strip()
     if line and not line.startswith("#") and "=" in line:
         key, _, value = line.partition("=")
         env[key.strip()] = value.strip()
-data = Path(sys.argv[2]).expanduser() if len(sys.argv) > 2 else Path.home() / "Code" / "Apps" / "rimworld-log-corpus"
+data = Path(sys.argv[2]).expanduser() if len(sys.argv) > 2 else Path.home() / ".local" / "share" / "rimworld-logs-db"
 bucket = env["R2_BUCKET"]
 failed = []
 

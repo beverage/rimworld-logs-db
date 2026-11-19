@@ -230,7 +230,7 @@ check("backoff doubles", [s for s in slept if s >= 1], [2.0, 4.0, 8.0, 16.0])
 env_dir = Path(tempfile.mkdtemp(prefix="corpus-env-"))
 env_file = env_dir / "env"
 env_file.write_text("# comment\n\nA=1\nB = two words \nC=has=equals==\nnot a pair\nEMPTY=\n")
-os.environ["HUGSLIB_CORPUS_ENV"] = str(env_file)
+os.environ["RIMWORLD_LOGS_DB_ENV"] = str(env_file)
 check("env file parses", settings.load_env(), {"A": "1", "B": "two words", "C": "has=equals==", "EMPTY": ""})
 try:
     settings.require(settings.load_env(), ("A", "EMPTY", "MISSING"))
@@ -238,7 +238,7 @@ try:
 except ConfigError as exc:
     raised = str(exc)
 check("missing settings are named, not shown", raised, "not set in the env file: EMPTY, MISSING")
-os.environ["HUGSLIB_CORPUS_ENV"] = str(env_dir / "absent")
+os.environ["RIMWORLD_LOGS_DB_ENV"] = str(env_dir / "absent")
 try:
     settings.load_env()
     raised = False

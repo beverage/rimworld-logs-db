@@ -20,7 +20,7 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
-ENV_FILE = Path(sys.argv[1]) if len(sys.argv) > 1 else Path.home() / ".config" / "hugslib-corpus" / "env"
+ENV_FILE = Path(sys.argv[1]) if len(sys.argv) > 1 else Path.home() / ".config" / "rimworld-logs-db" / "env"
 env = {}
 for line in ENV_FILE.read_text().splitlines():
     line = line.strip()
@@ -71,7 +71,7 @@ if attempt("put test object", lambda: s3.put_object(Bucket=bucket, Key="_check/h
 
 request = urllib.request.Request(
     env["SUPABASE_URL"].rstrip("/") + "/rest/v1/logs?select=id&limit=1",
-    headers={"apikey": env["SUPABASE_SECRET_KEY"], "User-Agent": "hugslib-corpus/0.1"},
+    headers={"apikey": env["SUPABASE_SECRET_KEY"], "User-Agent": "rimworld-logs-db/0.1"},
 )
 try:
     with urllib.request.urlopen(request, timeout=30) as response:

@@ -14,14 +14,14 @@ from .common import ConfigError
 ACCOUNT = "HugsLibRecordKeeper"
 API = "https://api.github.com"
 RAW_HOST = "gist.githubusercontent.com"
-USER_AGENT = "hugslib-corpus/0.1"
+USER_AGENT = "rimworld-logs-db/0.1"
 LOG_FILENAME = "output_log.txt"
 RELEASE_1_6 = "2025-07-11"
 
-DEFAULT_DATA = Path.home() / "Code" / "Apps" / "rimworld-log-corpus"
-DEFAULT_ENV = Path.home() / ".config" / "hugslib-corpus" / "env"
-DATA_VARIABLE = "HUGSLIB_CORPUS_DIR"
-ENV_VARIABLE = "HUGSLIB_CORPUS_ENV"
+DEFAULT_DATA = Path.home() / ".local" / "share" / "rimworld-logs-db"
+DEFAULT_ENV = Path.home() / ".config" / "rimworld-logs-db" / "env"
+DATA_VARIABLE = "RIMWORLD_LOGS_DB_DATA"
+ENV_VARIABLE = "RIMWORLD_LOGS_DB_ENV"
 
 R2_KEYS = ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY")
 SUPABASE_KEYS = ("SUPABASE_URL", "SUPABASE_SECRET_KEY")

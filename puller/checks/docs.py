@@ -22,7 +22,7 @@ from pathlib import Path
 
 import duckdb
 
-ENV_FILE = Path(sys.argv[1]) if len(sys.argv) > 1 else Path.home() / ".config" / "hugslib-corpus" / "env"
+ENV_FILE = Path(sys.argv[1]) if len(sys.argv) > 1 else Path.home() / ".config" / "rimworld-logs-db" / "env"
 env = {}
 for line in ENV_FILE.read_text().splitlines():
     line = line.strip()
