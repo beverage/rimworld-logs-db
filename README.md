@@ -1,4 +1,4 @@
-# RimWorld DB
+# RimWorld Logs DB
 
 An archive of public HugsLib logs that you query with SQL.
 
@@ -18,7 +18,7 @@ Nothing is installed on a server and there is no account to create. DuckDB reads
 **1. Save the key in DuckDB.** Start `duckdb` and run this with your three values. The endpoint is a host name only, with no `https://` in front.
 
 ```sql
-CREATE PERSISTENT SECRET rimworld_db (
+CREATE PERSISTENT SECRET rimworld_logs_db (
     TYPE S3,
     KEY_ID '<access key id>',
     SECRET '<secret access key>',
@@ -33,11 +33,11 @@ DuckDB keeps the secret in `~/.duckdb/stored_secrets`, in a file only your user 
 **2. Create the views.** From a clone of this repo, open a database file and load [sql/views.sql](sql/views.sql):
 
 ```
-duckdb rimworld.duckdb
+duckdb rimworld-logs.duckdb
 .read sql/views.sql
 ```
 
-The views are saved in `rimworld.duckdb`. Next time, `duckdb rimworld.duckdb` is the whole setup.
+The views are saved in `rimworld-logs.duckdb`. Next time, `duckdb rimworld-logs.duckdb` is the whole setup.
 
 **3. Check it works.**
 

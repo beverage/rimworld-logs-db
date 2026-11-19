@@ -1,4 +1,4 @@
--- Views over the RimWorld DB bucket.
+-- Views over the RimWorld Logs DB bucket.
 --
 -- Run this once inside a DuckDB database file. The views are saved in that
 -- file, and because each one reads a file pattern, new weeks show up in them
